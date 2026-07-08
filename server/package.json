@@ -1,0 +1,18 @@
+{
+  "name": "vibe-voice-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Transcription backend for Vibe-For-Vscode: Workers AI whisper-large-v3-turbo behind license-key auth.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260707.1",
+    "typescript": "^5.5.0",
+    "wrangler": "^4.0.0"
+  }
+}

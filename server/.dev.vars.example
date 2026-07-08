@@ -1,0 +1,4 @@
+# 本地开发变量样例。复制为 .dev.vars(已 gitignore)后填写。
+# 本项目当前无 secret 型环境变量;License Key 走 KV(wrangler kv key put)。
+# 本地 dev 时给 KV 塞测试 key:
+#   npx wrangler kv key put --binding AUTH_KEYS "dev-test-key" '{"owner":"local"}' --local

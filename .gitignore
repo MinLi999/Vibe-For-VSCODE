@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+*.vsix
+*.tsbuildinfo
+
+# Cloudflare / Wrangler
+server/.wrangler/
+server/.dev.vars
+.dev.vars
+
+# Claude Code personal settings
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Logs
+*.log

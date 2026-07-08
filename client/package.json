@@ -1,0 +1,110 @@
+{
+  "name": "vibe-for-vscode",
+  "displayName": "Vibe Coding Voice Input",
+  "description": "Speak your prompt (Chinese-first) and insert the transcription into Claude Code, Cline, Copilot Chat, or the active editor.",
+  "version": "0.1.0",
+  "publisher": "elvisli",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "vibe.toggleRecording",
+        "title": "Vibe: Toggle Voice Recording / 开始·停止录音"
+      },
+      {
+        "command": "vibe.cancelRecording",
+        "title": "Vibe: Cancel Recording / 取消录音"
+      },
+      {
+        "command": "vibe.setLicenseKey",
+        "title": "Vibe: Set License Key / 设置授权密钥"
+      },
+      {
+        "command": "vibe.clearLicenseKey",
+        "title": "Vibe: Clear License Key / 清除授权密钥"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "vibe.toggleRecording",
+        "key": "ctrl+shift+space"
+      },
+      {
+        "command": "vibe.cancelRecording",
+        "key": "escape",
+        "when": "vibe.recording"
+      }
+    ],
+    "configuration": {
+      "title": "Vibe Coding Voice Input",
+      "properties": {
+        "vibe.endpoint": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Cloudflare Worker base URL, e.g. `https://vibe-voice-worker.<account>.workers.dev` (no trailing slash)."
+        },
+        "vibe.language": {
+          "type": "string",
+          "default": "zh",
+          "pattern": "^[a-z]{2}$",
+          "markdownDescription": "ISO-639-1 language passed explicitly to Whisper (bypasses auto-detection latency). Default `zh`."
+        },
+        "vibe.maxRecordSeconds": {
+          "type": "number",
+          "default": 25,
+          "minimum": 3,
+          "maximum": 28,
+          "markdownDescription": "Auto-stop recording after this many seconds (Worker has a 30s ceiling; keep ≤28)."
+        },
+        "vibe.insertTarget": {
+          "type": "string",
+          "enum": ["auto", "editor", "terminal", "clipboard"],
+          "default": "auto",
+          "enumDescriptions": [
+            "Active editor cursor → active terminal (Claude Code CLI) → clipboard fallback",
+            "Always insert at the active editor cursor",
+            "Always send to the active terminal (no newline)",
+            "Always copy to clipboard and notify"
+          ],
+          "markdownDescription": "Where the transcription goes. Webview chat inputs (Copilot Chat / Cline) cannot be written cross-extension; `clipboard` + paste is the reliable path for them."
+        },
+        "vibe.ffmpegPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the `ffmpeg` binary. Leave empty to use `ffmpeg` from PATH."
+        },
+        "vibe.audioDevice": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Input device override. macOS avfoundation index (e.g. `:0`), Windows dshow name (e.g. `audio=Microphone (USB)`), Linux pulse source. Empty = platform default."
+        },
+        "vibe.contextHint": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Extract identifiers from the active editor + recent filenames and send them as a vocabulary hint (Whisper `initial_prompt`) so code terms transcribe accurately."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "npm run compile -- --production",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}
