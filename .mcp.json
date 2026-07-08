@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/elvisli/Library/Mobile Documents/com~apple~CloudDocs/Obsidian"]
+    }
+  }
+}

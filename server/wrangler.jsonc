@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vibe-voice-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // 不暴露 *.workers.dev 之外的入口前先用默认域;上生产可切自定义域并置 false
+  "workers_dev": true,
+
+  // Workers AI —— Whisper large-v3-turbo 经此绑定调用
+  "ai": {
+    "binding": "AI"
+  },
+
+  // License Key 存在性校验用的 KV。
+  // id 用 `npx wrangler kv namespace create AUTH_KEYS` 生成后粘贴;
+  // 密钥值一律 `npx wrangler kv key put --binding AUTH_KEYS "<key>" '{"owner":"..."}' --remote`,
+  // 绝不写进源码或本文件(CLAUDE.md 红线 2)。
+  "kv_namespaces": [
+    {
+      "binding": "AUTH_KEYS",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}
