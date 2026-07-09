@@ -60,20 +60,21 @@
           "type": "number",
           "default": 25,
           "minimum": 3,
-          "maximum": 28,
-          "markdownDescription": "Auto-stop recording after this many seconds (Worker has a 30s ceiling; keep ≤28)."
+          "maximum": 600,
+          "markdownDescription": "Auto-stop recording after this many seconds (Note: Cloudflare Workers AI may have hard limits on extremely long payloads, e.g. >120s)."
         },
         "vibe.insertTarget": {
           "type": "string",
-          "enum": ["auto", "editor", "terminal", "clipboard"],
+          "enum": ["auto", "editor", "terminal", "clipboard", "chat"],
           "default": "auto",
           "enumDescriptions": [
-            "Active editor cursor → active terminal (Claude Code CLI) → clipboard fallback",
+            "Active editor cursor → active terminal → agent chat input → clipboard fallback",
             "Always insert at the active editor cursor",
             "Always send to the active terminal (no newline)",
-            "Always copy to clipboard and notify"
+            "Always copy to clipboard and notify",
+            "Always pre-fill the active Copilot/Agent chat panel input box"
           ],
-          "markdownDescription": "Where the transcription goes. Webview chat inputs (Copilot Chat / Cline) cannot be written cross-extension; `clipboard` + paste is the reliable path for them."
+          "markdownDescription": "Where to insert the transcribed text. `auto` will detect active editor or terminal, then fallback to chat/clipboard."
         },
         "vibe.ffmpegPath": {
           "type": "string",

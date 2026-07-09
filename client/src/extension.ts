@@ -11,6 +11,7 @@ import { TextInserter } from './viewer/TextInserter';
 import { EditorContextViewer } from './viewer/EditorContextViewer';
 import { AudioRecorderService } from './services/AudioRecorderService';
 import { CloudflareApiService } from './services/CloudflareApiService';
+import { WorkspaceContextService } from './services/WorkspaceContextService';
 import { VibeController } from './controllers/VibeController';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -20,6 +21,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const statusBar = new StatusBarViewer();
   const inserter = new TextInserter();
   const editorContext = new EditorContextViewer();
+  const workspaceContext = new WorkspaceContextService();
 
   const recorder = new AudioRecorderService();
   const api = new CloudflareApiService();
@@ -33,10 +35,11 @@ export function activate(context: vscode.ExtensionContext): void {
     editorContext,
     recorder,
     api,
+    workspaceContext,
   );
   controller.registerCommands(context);
 
-  context.subscriptions.push(statusBar, editorContext, controller);
+  context.subscriptions.push(statusBar, editorContext, workspaceContext, controller);
 }
 
 export function deactivate(): void {

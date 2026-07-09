@@ -6,11 +6,12 @@
  */
 import * as vscode from 'vscode';
 
-export type InsertTarget = 'auto' | 'editor' | 'terminal' | 'clipboard';
+export type InsertTarget = 'auto' | 'editor' | 'terminal' | 'clipboard' | 'chat';
 
 export type InsertOutcome =
   | { via: 'editor' }
   | { via: 'terminal'; terminalName: string }
+  | { via: 'chat' }
   | { via: 'clipboard' };
 
 export class TextInsertionError extends Error {}
@@ -23,6 +24,8 @@ export class TextInserter {
         return this.intoEditor(text);
       case 'terminal':
         return this.intoTerminal(text);
+      case 'chat':
+        return this.intoChat(text);
       case 'clipboard':
         return this.intoClipboard(text);
       case 'auto': {
@@ -32,7 +35,11 @@ export class TextInserter {
         if (vscode.window.activeTerminal !== undefined) {
           return this.intoTerminal(text);
         }
-        return this.intoClipboard(text);
+        try {
+          return await this.intoChat(text);
+        } catch {
+          return this.intoClipboard(text);
+        }
       }
     }
   }
@@ -66,6 +73,18 @@ export class TextInserter {
     terminal.sendText(text, false);
     terminal.show(true);
     return { via: 'terminal', terminalName: terminal.name };
+  }
+
+  private async intoChat(text: string): Promise<InsertOutcome> {
+    try {
+      await vscode.commands.executeCommand('workbench.action.chat.open', {
+        query: text,
+        isPartialQuery: true,
+      });
+      return { via: 'chat' };
+    } catch (err) {
+      throw new TextInsertionError(`无法插入到聊天窗口: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private async intoClipboard(text: string): Promise<InsertOutcome> {

@@ -12,6 +12,7 @@ import { TextInserter, TextInsertionError, type InsertTarget } from '../viewer/T
 import { EditorContextViewer } from '../viewer/EditorContextViewer';
 import { AudioRecorderService, FfmpegNotFoundError, RecorderStartError } from '../services/AudioRecorderService';
 import { ApiError, CloudflareApiService } from '../services/CloudflareApiService';
+import { WorkspaceContextService } from '../services/WorkspaceContextService';
 
 const SECRET_KEY = 'vibe.licenseKey';
 
@@ -38,6 +39,7 @@ export class VibeController implements vscode.Disposable {
     private readonly editorContext: EditorContextViewer,
     private readonly recorder: AudioRecorderService,
     private readonly api: CloudflareApiService,
+    private readonly workspaceContext: WorkspaceContextService,
   ) {
     // The keybinding's `when: vibe.recording` (Esc to cancel) depends on this context.
     this.disposables.push(
@@ -216,7 +218,8 @@ export class VibeController implements vscode.Disposable {
   /** Viewer takes a text snapshot → Model extracts keywords. */
   private async collectKeywords(): Promise<string[]> {
     const snapshot = await this.editorContext.snapshot();
-    return this.vocabulary.extractKeywords(snapshot);
+    const workspaceKeywords = this.workspaceContext.getWorkspaceKeywords();
+    return this.vocabulary.extractKeywords(snapshot, workspaceKeywords);
   }
 
   // ── Auth lifecycle ────────────────────────────────────────
