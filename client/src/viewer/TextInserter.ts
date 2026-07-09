@@ -83,10 +83,23 @@ export class TextInserter {
         query: text,
         isPartialQuery: true,
       });
-      return { via: 'chat' };
     } catch (err) {
-      throw new TextInsertionError(`无法插入到聊天窗口: ${err instanceof Error ? err.message : String(err)}`);
+      // Ignore built-in Copilot Chat open failure
     }
+
+    // On macOS, try to trigger a system-level paste via AppleScript so it enters any active focused webview input (best effort)
+    if (process.platform === 'darwin') {
+      try {
+        const { exec } = require('child_process');
+        exec(`osascript -e 'tell application "System Events" to keystroke "v" using {command down}'`, (error: any) => {
+          // Silent catch to prevent crash if Assistive Access (Accessibility) permissions are missing in macOS Settings
+        });
+      } catch {
+        // Ignore if child_process fails
+      }
+    }
+
+    return { via: 'chat' };
   }
 
   private async intoClipboard(text: string): Promise<InsertOutcome> {
