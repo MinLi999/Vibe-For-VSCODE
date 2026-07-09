@@ -21,33 +21,35 @@ const STOP_WORDS = new Set([
   'self', 'none', 'elif', 'pass', 'lambda', 'print', 'range',
 ]);
 
+export interface DocumentContext {
+  text: string;
+  key: string;
+}
+
 export interface EditorContextInput {
-  /** Full text of the active editor (may be null, e.g. focus is on a chat panel). */
-  documentText: string | null;
-  /** Cache-invalidation key: document URI + version. */
-  documentKey: string | null;
+  /** All currently opened text documents in the workspace. */
+  documents: DocumentContext[];
   /** Recent workspace filenames (with extension). */
   fileNames: string[];
 }
 
 export class VocabularyModel {
-  private cachedKey: string | null = null;
-  private cachedTokens: string[] = [];
+  private docFreqCache = new Map<string, Map<string, number>>();
 
   /**
-   * Extracts top-40 identifiers + filename stems, returning a deduplicated vocabulary
+   * Extracts top-40 identifiers + workspace keywords + filename stems, returning a deduplicated vocabulary
    * (injected as `keywords` in the API request).
    */
-  extractKeywords(input: EditorContextInput): string[] {
-    const documentTokens = this.tokensForDocument(input);
+  extractKeywords(input: EditorContextInput, workspaceKeywords: string[] = []): string[] {
+    const documentTokens = this.tokensAcrossDocuments(input);
     const fileStems = input.fileNames
       .map((name) => stemOfFileName(name))
       .filter((stem): stem is string => stem !== null);
 
-    // Document tokens take priority (most relevant to spoken content); filename stems fill in; dedupe overall.
+    // Document tokens take priority (most relevant to spoken content); then workspace keywords (global project vocabulary); then filename stems fill in; dedupe overall.
     const merged: string[] = [];
     const seen = new Set<string>();
-    for (const token of [...documentTokens, ...fileStems]) {
+    for (const token of [...documentTokens, ...workspaceKeywords, ...fileStems]) {
       const lower = token.toLowerCase();
       if (!seen.has(lower)) {
         seen.add(lower);
@@ -62,32 +64,40 @@ export class VocabularyModel {
     return keywords.length === 0 ? '' : `context vocabulary: ${keywords.join(', ')}`;
   }
 
-  /** Cached by documentKey (URI+version); doesn't re-scan the same document version. */
-  private tokensForDocument(input: EditorContextInput): string[] {
-    if (input.documentText === null || input.documentKey === null) {
-      return [];
-    }
-    if (input.documentKey === this.cachedKey) {
-      return this.cachedTokens;
-    }
-
-    const frequency = new Map<string, number>();
-    for (const match of input.documentText.matchAll(IDENTIFIER_PATTERN)) {
-      const token = match[0];
-      if (STOP_WORDS.has(token.toLowerCase())) {
-        continue;
+  /** Cached by document key (URI+version); merging frequencies across all open documents. */
+  private tokensAcrossDocuments(input: EditorContextInput): string[] {
+    const currentKeys = new Set(input.documents.map((d) => d.key));
+    // Clean up closed/changed documents
+    for (const key of this.docFreqCache.keys()) {
+      if (!currentKeys.has(key)) {
+        this.docFreqCache.delete(key);
       }
-      frequency.set(token, (frequency.get(token) ?? 0) + 1);
     }
 
-    const top = [...frequency.entries()]
+    const globalFreq = new Map<string, number>();
+
+    for (const doc of input.documents) {
+      let freq = this.docFreqCache.get(doc.key);
+      if (freq === undefined) {
+        freq = new Map<string, number>();
+        for (const match of doc.text.matchAll(IDENTIFIER_PATTERN)) {
+          const token = match[0];
+          if (STOP_WORDS.has(token.toLowerCase())) {
+            continue;
+          }
+          freq.set(token, (freq.get(token) ?? 0) + 1);
+        }
+        this.docFreqCache.set(doc.key, freq);
+      }
+      for (const [token, count] of freq.entries()) {
+        globalFreq.set(token, (globalFreq.get(token) ?? 0) + count);
+      }
+    }
+
+    return [...globalFreq.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, TOP_TOKEN_COUNT)
       .map(([token]) => token);
-
-    this.cachedKey = input.documentKey;
-    this.cachedTokens = top;
-    return top;
   }
 }
 

@@ -10,9 +10,10 @@ import * as vscode from 'vscode';
 const RECENT_FILE_LIMIT = 15;
 const FIND_EXCLUDE = '**/{node_modules,dist,out,.git}/**';
 
+import { type DocumentContext } from '../models/VocabularyModel';
+
 export interface EditorSnapshot {
-  documentText: string | null;
-  documentKey: string | null;
+  documents: DocumentContext[];
   fileNames: string[];
 }
 
@@ -30,11 +31,8 @@ export class EditorContextViewer implements vscode.Disposable {
     });
   }
 
-  /** Snapshot of the current (or most recent) file editor + recent filenames. */
+  /** Snapshot of all currently opened text documents + recent filenames. */
   async snapshot(): Promise<EditorSnapshot> {
-    const editor = EditorContextViewer.realEditorOf(vscode.window.activeTextEditor) ?? this.lastRealEditor;
-    const document = editor?.document;
-
     let fileNames: string[] = [];
     try {
       const uris = await vscode.workspace.findFiles('**/*', FIND_EXCLUDE, RECENT_FILE_LIMIT);
@@ -44,14 +42,17 @@ export class EditorContextViewer implements vscode.Disposable {
       // an enhancement, so degrade silently.
     }
 
-    if (document === undefined || document.isClosed) {
-      return { documentText: null, documentKey: null, fileNames };
-    }
-    return {
-      documentText: document.getText(),
-      documentKey: `${document.uri.toString()}@${document.version}`,
-      fileNames,
-    };
+    const documents = vscode.workspace.textDocuments
+      .filter((doc) => {
+        const scheme = doc.uri.scheme;
+        return (scheme === 'file' || scheme === 'untitled' || scheme === 'vscode-remote') && !doc.isClosed;
+      })
+      .map((doc) => ({
+        text: doc.getText(),
+        key: `${doc.uri.toString()}@${doc.version}`,
+      }));
+
+    return { documents, fileNames };
   }
 
   dispose(): void {
