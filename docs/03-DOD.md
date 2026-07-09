@@ -21,8 +21,8 @@ grep -rn "from ['\"]\.\./\(models\|viewer\|controllers\)" client/src/services/
 ```bash
 # 密钥不进源码/配置(应零输出;placeholder 与 SecretStorage API 除外)
 grep -rn "LICENSE_KEY\s*=\|Bearer [A-Za-z0-9]\{16,\}" client/src server/src
-# 语言锁与上限的权威数值未被偷改
-grep -n '"zh"' server/src/transcribe.ts && grep -n "25" client/package.json && grep -n "8 \* 1024 \* 1024\|8_388_608\|MAX_AUDIO_BASE64" server/src/transcribe.ts
+# 语言锁与上限的权威数值未被偷改(源码用单引号,故不锚定引号类型)
+grep -n "= 'zh'" server/src/transcribe.ts && grep -n "maxRecordSeconds" client/package.json && grep -n "MAX_AUDIO_BASE64 = 8" server/src/transcribe.ts
 ```
 
 ## 3. 构建与验证

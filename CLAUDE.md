@@ -26,7 +26,7 @@
 3. **转写语言锁 `zh`**(`vibe.language` 可覆盖):显式传 `language` 给 Whisper,绕过自动检测延迟。
 4. **录音上限 25s**(`vibe.maxRecordSeconds`):MP3 16kHz 单声道 ~32kbps,payload 远低于 Worker 128MB 内存/30s 执行上限;Worker 端拒收 >8MB base64(413)。
 5. **闭源**:LICENSE 为 proprietary;未经要求不发布 marketplace、不提交不推送。
-6. **音频采集 = 系统 ffmpeg**(macOS avfoundation / Windows dshow / Linux pulse),未安装时给出平台安装指引,不捆绑二进制(许可证风险)。
+6. **音频采集 = 系统 ffmpeg**(macOS avfoundation / Windows dshow / Linux pulse),**不捆绑二进制**(许可证风险)、不走 webview 录音(VS Code 对 webview 麦克风限制不可靠,微软官方语音扩展也是原生模块方案)。**装机负担最小化**:三级探测(`vibe.ffmpegPath` → PATH → 各平台常见安装路径,含 Homebrew 的 `/opt/homebrew/bin`,规避 GUI 启动 PATH 缺失坑);未装时错误提示带「一键安装」按钮(内置终端自动执行 brew/winget/apt 命令)。
 7. **Worker 鉴权**:`Authorization: Bearer <LICENSE_KEY>` → `AUTH_KEYS` KV 查存在性;缺头 401,无效 403。
 
 ## 全局知识库联动 / MCP ↔ Obsidian

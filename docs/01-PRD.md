@@ -12,10 +12,14 @@
 
 ### 模块 A:录音与热键
 - 业务逻辑:`ctrl+shift+space` 切换录音;再按停止并转写;`vibe.cancelRecording` 丢弃;25s 自动停止。
+- 采集方式:**系统 ffmpeg**(macOS avfoundation / Windows dshow / Linux pulse → 16kHz 单声道 32kbps MP3 管道)。webview 录音方案已评估并否决:VS Code 对 webview 麦克风权限限制不可靠(微软官方 VS Code Speech 扩展亦采用原生模块而非 webview)。
+- **装机负担最小化**(本模块的产品要求):
+  1. 三级自动探测:`vibe.ffmpegPath`(手动指定)→ PATH → 各平台常见安装路径(macOS `/opt/homebrew/bin`、`/usr/local/bin`;Windows winget/choco/scoop 默认位置;Linux `/usr/bin`、`/snap/bin`)。已装用户零操作直接可用(规避 VS Code GUI 启动时 PATH 不含 Homebrew 的坑)。
+  2. 未找到时错误提示带「一键安装」按钮:自动打开内置终端并执行平台命令(brew / winget / apt),装完再按热键即用;另提供「手动指定路径」按钮直达设置项。
 - 分层影响面:
   - View:`StatusBarViewer`(麦克风图标→波形动画→转写 spinner)
-  - Controller:`VibeController`(toggle 状态编排、超时自停)
-  - Service:`AudioRecorderService`(ffmpeg 进程、平台参数、MP3 流)
+  - Controller:`VibeController`(toggle 状态编排、超时自停、ffmpeg 缺失时的一键安装引导)
+  - Service:`AudioRecorderService`(三级探测、ffmpeg 进程、平台参数、MP3 流)
   - Model:`AudioState`(状态机 + Buffer + Base64)
 
 ### 模块 B:上下文词汇提取
@@ -43,5 +47,5 @@
 ## 3. 绝对禁止(Out of Scope)
 - Marketplace 发布/签名流程、支付/授权门户(key 用 wrangler CLI 手工发放)。
 - 流式增量转写(等 Workers AI 支持再议)。
-- 捆绑 ffmpeg/sox 二进制((L)GPL 风险)。
+- 捆绑 ffmpeg/sox 二进制((L)GPL 风险);webview 录音(权限不可靠,已评估否决)。
 - Windows/Linux 的人工实测(代码路径保留,本机 macOS 无法验证)。

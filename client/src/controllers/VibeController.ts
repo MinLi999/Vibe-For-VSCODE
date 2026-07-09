@@ -108,7 +108,7 @@ export class VibeController implements vscode.Disposable {
       await this.recorder.ensureFfmpeg(config.ffmpegPath);
     } catch (err) {
       if (err instanceof FfmpegNotFoundError) {
-        void vscode.window.showErrorMessage(`Vibe:未找到 ffmpeg。安装:${err.installHint},或在设置里指定 vibe.ffmpegPath`);
+        await this.offerFfmpegInstall(err.installCommand);
         return;
       }
       throw err;
@@ -188,6 +188,28 @@ export class VibeController implements vscode.Disposable {
       this.audioState.reset();
       this.statusBar.flashResult('error', '转写失败');
       await this.reportTranscribeError(err);
+    }
+  }
+
+  /**
+   * One-click ffmpeg install guidance: runs the platform install command in the
+   * integrated terminal so the user never has to look up or copy commands.
+   */
+  private async offerFfmpegInstall(installCommand: string): Promise<void> {
+    const pick = await vscode.window.showErrorMessage(
+      'Vibe:未找到 ffmpeg(录音依赖,仅需安装一次)',
+      '一键安装',
+      '手动指定路径',
+    );
+    if (pick === '一键安装') {
+      const terminal = vscode.window.createTerminal('Vibe:安装 ffmpeg');
+      terminal.show();
+      terminal.sendText(installCommand, true);
+      void vscode.window.showInformationMessage(
+        `Vibe:正在终端执行「${installCommand}」,完成后再按 Ctrl+Shift+Space 即可录音`,
+      );
+    } else if (pick === '手动指定路径') {
+      void vscode.commands.executeCommand('workbench.action.openSettings', 'vibe.ffmpegPath');
     }
   }
 
