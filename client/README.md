@@ -4,10 +4,10 @@
 
 ## 前置条件
 
-1. **ffmpeg**(系统安装,不捆绑):
-   - macOS:`brew install ffmpeg`,并在 系统设置 → 隐私与安全性 → 麦克风 中允许 VS Code
-   - Windows:`winget install Gyan.FFmpeg`
-   - Linux:`sudo apt install ffmpeg`(pulse 输入)
+1. **ffmpeg**(系统安装,不捆绑)——**多数情况下无需手动操作**:
+   - 已装过的用户:扩展自动探测(PATH → Homebrew/winget/choco/scoop/apt 常见路径),直接可用;
+   - 未装的用户:首次录音时弹「一键安装」按钮,自动在内置终端执行对应平台命令(macOS brew / Windows winget / Linux apt),装完重按热键即可;
+   - macOS 首次录音需在 系统设置 → 隐私与安全性 → 麦克风 中允许 VS Code。
 2. **服务端**:部署 `server/` 的 Cloudflare Worker,把 URL 填进 `vibe.endpoint`。
 3. **License Key**:命令面板 → `Vibe: Set License Key`(存 SecretStorage,不进设置文件)。
 

@@ -3,10 +3,13 @@
  * I/O only; no vscode.window UI calls; errors are thrown as typed Errors to the Controller (02-STANDARDS §2).
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 
 export class FfmpegNotFoundError extends Error {
-  constructor(public readonly installHint: string) {
+  /** `installCommand` is directly runnable in the integrated terminal (one-click install). */
+  constructor(public readonly installCommand: string) {
     super('ffmpeg not found');
   }
 }
@@ -22,15 +25,44 @@ export interface RecorderOptions {
   maxSeconds: number;
 }
 
-/** Platform install hint (the Controller uses this to build an actionable error message). */
-export function ffmpegInstallHint(): string {
+/** Exact runnable install command per platform (executed verbatim by the one-click install terminal). */
+export function ffmpegInstallCommand(): string {
   switch (os.platform()) {
     case 'darwin':
       return 'brew install ffmpeg';
     case 'win32':
-      return 'winget install Gyan.FFmpeg(或 choco install ffmpeg)';
+      return 'winget install --id Gyan.FFmpeg -e';
     default:
-      return 'sudo apt install ffmpeg(或对应发行版包管理器)';
+      return 'sudo apt install -y ffmpeg';
+  }
+}
+
+/**
+ * Common absolute install locations probed after PATH lookup fails.
+ * VS Code launched from the GUI (Dock/Start menu) often gets a minimal PATH that
+ * lacks package-manager bin dirs (notably Homebrew's /opt/homebrew/bin), so a user
+ * who *has* ffmpeg installed would otherwise see a false "not found".
+ */
+function commonFfmpegLocations(): string[] {
+  switch (os.platform()) {
+    case 'darwin':
+      return [
+        '/opt/homebrew/bin/ffmpeg', // Homebrew on Apple Silicon
+        '/usr/local/bin/ffmpeg', // Homebrew on Intel
+        '/opt/local/bin/ffmpeg', // MacPorts
+      ];
+    case 'win32': {
+      const local = process.env['LOCALAPPDATA'];
+      const profile = process.env['USERPROFILE'];
+      return [
+        ...(local ? [path.join(local, 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe')] : []),
+        'C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe',
+        ...(profile ? [path.join(profile, 'scoop', 'shims', 'ffmpeg.exe')] : []),
+        'C:\\ffmpeg\\bin\\ffmpeg.exe',
+      ];
+    }
+    default:
+      return ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/snap/bin/ffmpeg'];
   }
 }
 
@@ -46,34 +78,52 @@ function captureArgs(audioDevice: string): string[] {
   }
 }
 
+/** Spawns `<binary> -version` to verify the candidate actually runs. */
+function probeFfmpeg(binary: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    try {
+      const probe = spawn(binary, ['-version'], { stdio: 'ignore' });
+      probe.once('error', () => resolve(false));
+      probe.once('exit', (code) => resolve(code === 0));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 export class AudioRecorderService {
   private child: ChildProcessWithoutNullStreams | null = null;
-  private detectedOk: string | null = null; // Caches the binary path once successfully probed.
+  private detectedOk: string | null = null; // Caches the resolved binary path once successfully probed.
 
   get isRecording(): boolean {
     return this.child !== null;
   }
 
-  /** Probes ffmpeg availability (spawns `ffmpeg -version`), caching the result per path. */
+  /**
+   * Tiered ffmpeg resolution (02-STANDARDS §3): configured path → PATH → common
+   * install locations. Only successful results are cached, so a retry right after
+   * the user installs ffmpeg re-probes and succeeds.
+   */
   async ensureFfmpeg(ffmpegPath: string): Promise<string> {
-    const binary = ffmpegPath !== '' ? ffmpegPath : 'ffmpeg';
-    if (this.detectedOk === binary) {
-      return binary;
-    }
-    const ok = await new Promise<boolean>((resolve) => {
-      try {
-        const probe = spawn(binary, ['-version'], { stdio: 'ignore' });
-        probe.once('error', () => resolve(false));
-        probe.once('exit', (code) => resolve(code === 0));
-      } catch {
-        resolve(false);
+    if (this.detectedOk !== null) {
+      // Re-resolve if the user changed the configured path since the last success.
+      if (ffmpegPath === '' || this.detectedOk === ffmpegPath) {
+        return this.detectedOk;
       }
-    });
-    if (!ok) {
-      throw new FfmpegNotFoundError(ffmpegInstallHint());
     }
-    this.detectedOk = binary;
-    return binary;
+
+    const candidates =
+      ffmpegPath !== ''
+        ? [ffmpegPath] // Explicit config wins outright; do not silently fall back.
+        : ['ffmpeg', ...commonFfmpegLocations().filter((p) => fs.existsSync(p))];
+
+    for (const candidate of candidates) {
+      if (await probeFfmpeg(candidate)) {
+        this.detectedOk = candidate;
+        return candidate;
+      }
+    }
+    throw new FfmpegNotFoundError(ffmpegInstallCommand());
   }
 
   /**
