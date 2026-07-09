@@ -76,6 +76,8 @@ export class TextInserter {
   }
 
   private async intoChat(text: string): Promise<InsertOutcome> {
+    // Always copy to clipboard as a fallback/safety net first, in case it's a custom webview chat
+    await this.intoClipboard(text);
     try {
       await vscode.commands.executeCommand('workbench.action.chat.open', {
         query: text,

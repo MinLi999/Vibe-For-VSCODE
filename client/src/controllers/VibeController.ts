@@ -183,8 +183,8 @@ export class VibeController implements vscode.Disposable {
       const outcome = await this.inserter.insert(result.text, config.insertTarget);
       this.audioState.completeWithText(result.text);
       this.statusBar.flashResult('ok', `已插入 ${result.text.length} 字`);
-      if (outcome.via === 'clipboard') {
-        void vscode.window.showInformationMessage('Vibe:转写结果已复制到剪贴板,请在聊天输入框粘贴(⌘V / Ctrl+V)');
+      if (outcome.via === 'clipboard' || outcome.via === 'chat') {
+        void vscode.window.showInformationMessage('Vibe:转写结果已复制到剪贴板,如果聊天框未自动填入,可直接粘贴(⌘V / Ctrl+V)');
       }
     } catch (err) {
       this.audioState.reset();
