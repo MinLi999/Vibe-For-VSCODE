@@ -50,9 +50,9 @@ export function getActiveKeybinding(): string {
     const cleanContent = content.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
     const bindings = JSON.parse(cleanContent);
     if (Array.isArray(bindings)) {
-      const match = bindings.find(b => b.command === 'vibefox.toggleRecording');
+      const match = bindings.find((b: any) => b.command === 'vibefox.toggleRecording');
       if (match && typeof match.key === 'string') {
-        return match.key.split('+').map(part => part.trim().charAt(0).toUpperCase() + part.trim().slice(1)).join('+');
+        return match.key.split('+').map((part: string) => part.trim().charAt(0).toUpperCase() + part.trim().slice(1)).join('+');
       }
     }
   } catch (err) {
