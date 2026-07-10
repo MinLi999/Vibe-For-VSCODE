@@ -6,6 +6,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as vscode from 'vscode';
 
 export class FfmpegNotFoundError extends Error {
   /** `installCommand` is directly runnable in the integrated terminal (one-click install). */
@@ -273,7 +274,9 @@ export class AudioRecorderService {
       try {
         const mp3 = await this.compressToMp3(remainingPcm, this.lastFfmpegPath);
         return mp3;
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`Vibe 压缩音频失败(Stop): ${msg}`);
         return null;
       }
     }
@@ -345,8 +348,9 @@ export class AudioRecorderService {
     try {
       const mp3 = await this.compressToMp3(pcm, this.lastFfmpegPath);
       onSegment(mp3);
-    } catch {
-      // Ignore background compression errors
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      void vscode.window.showErrorMessage(`Vibe 压缩分段失败(VAD): ${msg}`);
     }
   }
 
