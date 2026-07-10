@@ -1,9 +1,10 @@
 {
-  "name": "vibe-for-vscode",
-  "displayName": "Vibe Coding Voice Input",
+  "name": "vibefox-for-vscode",
+  "displayName": "VibeFox",
   "description": "Speak your prompt (Chinese-first) and insert the transcription into Claude Code, Cline, Copilot Chat, or the active editor.",
   "version": "0.1.0",
   "publisher": "elvisli",
+  "icon": "icon.png",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
@@ -17,41 +18,41 @@
   "contributes": {
     "commands": [
       {
-        "command": "vibe.toggleRecording",
-        "title": "Vibe: Toggle Voice Recording / 开始·停止录音"
+        "command": "vibefox.toggleRecording",
+        "title": "VibeFox: Toggle Voice Recording / 开始·停止录音"
       },
       {
-        "command": "vibe.cancelRecording",
-        "title": "Vibe: Cancel Recording / 取消录音"
+        "command": "vibefox.cancelRecording",
+        "title": "VibeFox: Cancel Recording / 取消录音"
       },
       {
-        "command": "vibe.setLicenseKey",
-        "title": "Vibe: Set License Key / 设置授权密钥"
+        "command": "vibefox.setLicenseKey",
+        "title": "VibeFox: Set License Key / 设置授权密钥"
       },
       {
-        "command": "vibe.setApiKey",
-        "title": "Vibe: Set API Key / 设置 API 密钥"
+        "command": "vibefox.setApiKey",
+        "title": "VibeFox: Set API Key / 设置 API 密钥"
       },
       {
-        "command": "vibe.clearApiKey",
-        "title": "Vibe: Clear API Key / 清除 API 密钥"
+        "command": "vibefox.clearApiKey",
+        "title": "VibeFox: Clear API Key / 清除 API 密钥"
       }
     ],
     "keybindings": [
       {
-        "command": "vibe.toggleRecording",
+        "command": "vibefox.toggleRecording",
         "key": "ctrl+shift+space"
       },
       {
-        "command": "vibe.cancelRecording",
+        "command": "vibefox.cancelRecording",
         "key": "escape",
-        "when": "vibe.recording"
+        "when": "vibefox.recording"
       }
     ],
     "configuration": {
-      "title": "Vibe Coding Voice Input",
+      "title": "VibeFox Coding Voice Input",
       "properties": {
-        "vibe.apiProvider": {
+        "vibefox.apiProvider": {
           "type": "string",
           "enum": ["cloudflare", "groq", "openai", "aliyun", "custom"],
           "default": "cloudflare",
@@ -64,30 +65,30 @@
           ],
           "markdownDescription": "Choose the API provider to use for speech-to-text transcription."
         },
-        "vibe.customEndpoint": {
+        "vibefox.customEndpoint": {
           "type": "string",
           "default": "",
-          "markdownDescription": "The HTTP POST API endpoint to use when `vibe.apiProvider` is set to `custom` (e.g. `http://localhost:8000/transcribe`). Should accept JSON `{ audio: \"base64\", language: \"zh\", keywords: [...] }` and return JSON `{ text: \"...\" }`."
+          "markdownDescription": "The HTTP POST API endpoint to use when `vibefox.apiProvider` is set to `custom` (e.g. `http://localhost:8000/transcribe`). Should accept JSON `{ audio: \"base64\", language: \"zh\", keywords: [...] }` and return JSON `{ text: \"...\" }`."
         },
-        "vibe.endpoint": {
+        "vibefox.endpoint": {
           "type": "string",
           "default": "",
           "markdownDescription": "Cloudflare Worker base URL, e.g. `https://vibe-voice-worker.<account>.workers.dev` (no trailing slash)."
         },
-        "vibe.language": {
+        "vibefox.language": {
           "type": "string",
           "default": "zh",
           "pattern": "^[a-z]{2}$",
           "markdownDescription": "ISO-639-1 language passed explicitly to Whisper (bypasses auto-detection latency). Default `zh`."
         },
-        "vibe.maxRecordSeconds": {
+        "vibefox.maxRecordSeconds": {
           "type": "number",
           "default": 25,
           "minimum": 3,
           "maximum": 600,
           "markdownDescription": "Auto-stop recording after this many seconds (Note: Cloudflare Workers AI may have hard limits on extremely long payloads, e.g. >120s)."
         },
-        "vibe.insertTarget": {
+        "vibefox.insertTarget": {
           "type": "string",
           "enum": ["auto", "editor", "terminal", "clipboard", "chat"],
           "default": "auto",
@@ -100,34 +101,34 @@
           ],
           "markdownDescription": "Where to insert the transcribed text. `auto` will detect active editor or terminal, then fallback to chat/clipboard."
         },
-        "vibe.ffmpegPath": {
+        "vibefox.ffmpegPath": {
           "type": "string",
           "default": "",
           "markdownDescription": "Absolute path to the `ffmpeg` binary. Leave empty to use `ffmpeg` from PATH."
         },
-        "vibe.audioDevice": {
+        "vibefox.audioDevice": {
           "type": "string",
           "default": "",
           "markdownDescription": "Input device override. macOS avfoundation index (e.g. `:0`), Windows dshow name (e.g. `audio=Microphone (USB)`), Linux pulse source. Empty = platform default."
         },
-        "vibe.contextHint": {
+        "vibefox.contextHint": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Extract identifiers from the active editor + recent filenames and send them as a vocabulary hint (Whisper `initial_prompt`) so code terms transcribe accurately."
         },
-        "vibe.vadEnabled": {
+        "vibefox.vadEnabled": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Enable client-side Voice Activity Detection (VAD) to split audio on silence and transcribe incrementally."
         },
-        "vibe.vadSilenceMs": {
+        "vibefox.vadSilenceMs": {
           "type": "number",
           "default": 1200,
           "minimum": 500,
           "maximum": 5000,
           "markdownDescription": "Silence threshold in milliseconds to trigger a split."
         },
-        "vibe.vadMinDurationMs": {
+        "vibefox.vadMinDurationMs": {
           "type": "number",
           "default": 3000,
           "minimum": 1000,

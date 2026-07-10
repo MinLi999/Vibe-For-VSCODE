@@ -276,7 +276,7 @@ export class AudioRecorderService {
         return mp3;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        void vscode.window.showErrorMessage(`Vibe 压缩音频失败(Stop): ${msg}`);
+        void vscode.window.showErrorMessage(`VibeFox 压缩音频失败(Stop): ${msg}`);
         return null;
       }
     }
@@ -350,7 +350,7 @@ export class AudioRecorderService {
       onSegment(mp3);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      void vscode.window.showErrorMessage(`Vibe 压缩分段失败(VAD): ${msg}`);
+      void vscode.window.showErrorMessage(`VibeFox 压缩分段失败(VAD): ${msg}`);
     }
   }
 
