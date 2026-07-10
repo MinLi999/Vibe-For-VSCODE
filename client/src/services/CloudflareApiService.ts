@@ -164,8 +164,11 @@ export class CloudflareApiService {
     }
   }
 
-  async transcribeAliyun(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
-    const url = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+  async transcribeAliyun(endpoint: string, apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+    const baseUrl = endpoint.trim().length > 0
+      ? endpoint.replace(/\/+$/, '')
+      : 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+    const url = `${baseUrl}/chat/completions`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 

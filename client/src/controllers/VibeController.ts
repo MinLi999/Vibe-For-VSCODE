@@ -97,20 +97,49 @@ export class VibeController implements vscode.Disposable {
     const config = this.readConfig();
 
     // Preflight checks: endpoint, license key, ffmpeg — all must be ready before entering the recording state.
-    if (config.endpoint === '') {
-      const pick = await vscode.window.showErrorMessage(
-        'Vibe:尚未配置转写服务地址(vibe.endpoint)',
-        '打开设置',
-      );
-      if (pick === '打开设置') {
-        void vscode.commands.executeCommand('workbench.action.openSettings', 'vibe.endpoint');
+    if (config.apiProvider === 'cloudflare') {
+      if (config.endpoint === '') {
+        const pick = await vscode.window.showErrorMessage(
+          'Vibe:尚未配置转写服务地址(vibe.endpoint)',
+          '打开设置',
+        );
+        if (pick === '打开设置') {
+          void vscode.commands.executeCommand('workbench.action.openSettings', 'vibe.endpoint');
+        }
+        return;
       }
-      return;
-    }
 
-    const licenseKey = await this.ensureLicenseKey();
-    if (licenseKey === undefined) {
-      return; // User cancelled the input.
+      const licenseKey = await this.ensureLicenseKey();
+      if (licenseKey === undefined) {
+        return; // User cancelled the input.
+      }
+    } else if (config.apiProvider === 'groq') {
+      const apiKey = await this.secrets.get('vibe.groqKey');
+      if (apiKey === undefined) {
+        await this.promptForApiKey();
+        const verifiedKey = await this.secrets.get('vibe.groqKey');
+        if (verifiedKey === undefined) {
+          return;
+        }
+      }
+    } else if (config.apiProvider === 'openai') {
+      const apiKey = await this.secrets.get('vibe.openaiKey');
+      if (apiKey === undefined) {
+        await this.promptForApiKey();
+        const verifiedKey = await this.secrets.get('vibe.openaiKey');
+        if (verifiedKey === undefined) {
+          return;
+        }
+      }
+    } else if (config.apiProvider === 'aliyun') {
+      const apiKey = await this.secrets.get('vibe.aliyunKey');
+      if (apiKey === undefined) {
+        await this.promptForApiKey();
+        const verifiedKey = await this.secrets.get('vibe.aliyunKey');
+        if (verifiedKey === undefined) {
+          return;
+        }
+      }
     }
 
     try {
@@ -267,7 +296,7 @@ export class VibeController implements vscode.Disposable {
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', '阿里云 API Key 未设置，请运行「Vibe: Set API Key」进行设置');
       }
-      return this.api.transcribeAliyun(apiKey, audioBase64, config.language, keywords);
+      return this.api.transcribeAliyun(config.endpoint, apiKey, audioBase64, config.language, keywords);
     } else if (provider === 'custom') {
       if (!config.customEndpoint) {
         throw new Error('自定义服务地址 (vibe.customEndpoint) 未配置');
