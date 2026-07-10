@@ -82,6 +82,129 @@ export class CloudflareApiService {
     return { text: body.text, duration_ms: body.duration_ms ?? 0 };
   }
 
+  async transcribeGroq(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+    return this.transcribeOpenAICompatible(
+      'https://api.groq.com/openai/v1/audio/transcriptions',
+      apiKey,
+      'whisper-large-v3',
+      audioBase64,
+      language,
+      keywords
+    );
+  }
+
+  async transcribeOpenAI(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+    return this.transcribeOpenAICompatible(
+      'https://api.openai.com/v1/audio/transcriptions',
+      apiKey,
+      'whisper-1',
+      audioBase64,
+      language,
+      keywords
+    );
+  }
+
+  private async transcribeOpenAICompatible(
+    url: string,
+    apiKey: string,
+    model: string,
+    audioBase64: string,
+    language: string,
+    keywords: string[]
+  ): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const buffer = Buffer.from(audioBase64, 'base64');
+      const blob = new Blob([buffer], { type: 'audio/mp3' });
+      const formData = new FormData();
+      formData.append('file', blob, 'audio.mp3');
+      formData.append('model', model);
+      formData.append('language', language);
+      if (keywords.length > 0) {
+        formData.append('prompt', `涉及的英文专业词汇如下：${keywords.join(', ')}。`);
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: formData,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let errDetail = `HTTP ${response.status}`;
+        try {
+          const errBody = (await response.json()) as { error?: { message?: string } };
+          if (errBody?.error?.message) {
+            errDetail = errBody.error.message;
+          }
+        } catch {}
+        throw new ApiError('server', errDetail, response.status);
+      }
+
+      const body = (await response.json()) as { text?: string };
+      if (typeof body.text !== 'string') {
+        throw new ApiError('server', '转写响应中没有包含 text 字段', response.status);
+      }
+      return body.text;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ApiError('timeout', `转写请求超时(${REQUEST_TIMEOUT_MS / 1000}s)`);
+      }
+      throw new ApiError('network', `请求失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async transcribeCustom(endpoint: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+    const url = endpoint.replace(/\/+$/, '');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          audio: audioBase64,
+          language,
+          keywords,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new ApiError('server', `HTTP ${response.status}`, response.status);
+      }
+
+      const body = (await response.json()) as { text?: string };
+      if (typeof body.text !== 'string') {
+        throw new ApiError('server', '自定义服务返回中缺少 text 字段', response.status);
+      }
+      return body.text;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ApiError('timeout', `转写请求超时(${REQUEST_TIMEOUT_MS / 1000}s)`);
+      }
+      throw new ApiError('network', `无法连接自定义服务: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private static async errorDetail(response: Response): Promise<string> {
     try {
       const body = (await response.json()) as { error?: string };

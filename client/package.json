@@ -29,8 +29,12 @@
         "title": "Vibe: Set License Key / 设置授权密钥"
       },
       {
-        "command": "vibe.clearLicenseKey",
-        "title": "Vibe: Clear License Key / 清除授权密钥"
+        "command": "vibe.setApiKey",
+        "title": "Vibe: Set API Key / 设置 API 密钥"
+      },
+      {
+        "command": "vibe.clearApiKey",
+        "title": "Vibe: Clear API Key / 清除 API 密钥"
       }
     ],
     "keybindings": [
@@ -47,6 +51,23 @@
     "configuration": {
       "title": "Vibe Coding Voice Input",
       "properties": {
+        "vibe.apiProvider": {
+          "type": "string",
+          "enum": ["cloudflare", "groq", "openai", "custom"],
+          "default": "cloudflare",
+          "enumDescriptions": [
+            "Use Cloudflare Workers AI (default free/hosted backend)",
+            "Use Groq Whisper API (requires Groq API Key)",
+            "Use OpenAI Whisper API (requires OpenAI API Key)",
+            "Use a custom HTTP POST endpoint (e.g. local SenseVoice or custom proxy)"
+          ],
+          "markdownDescription": "Choose the API provider to use for speech-to-text transcription."
+        },
+        "vibe.customEndpoint": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The HTTP POST API endpoint to use when `vibe.apiProvider` is set to `custom` (e.g. `http://localhost:8000/transcribe`). Should accept JSON `{ audio: \"base64\", language: \"zh\", keywords: [...] }` and return JSON `{ text: \"...\" }`."
+        },
         "vibe.endpoint": {
           "type": "string",
           "default": "",
