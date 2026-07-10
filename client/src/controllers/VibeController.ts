@@ -19,44 +19,36 @@ import { WorkspaceContextService } from '../services/WorkspaceContextService';
 
 export function getActiveKeybinding(): string {
   const defaultKey = 'Ctrl+Shift+Space';
-  try {
-    let appDir = 'Code';
-    const appName = vscode.env.appName.toLowerCase();
-    if (appName.includes('cursor')) {
-      appDir = 'Cursor';
-    } else if (appName.includes('insiders')) {
-      appDir = 'Code - Insiders';
-    } else if (appName.includes('codium')) {
-      appDir = 'VSCodium';
-    }
+  const appDirs = ['Cursor', 'Code', 'Code - Insiders', 'VSCodium'];
 
-    let userFolder = '';
-    const home = os.homedir();
-    if (process.platform === 'darwin') {
-      userFolder = path.join(home, 'Library', 'Application Support', appDir, 'User');
-    } else if (process.platform === 'win32') {
-      const appdata = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-      userFolder = path.join(appdata, appDir, 'User');
-    } else {
-      userFolder = path.join(home, '.config', appDir, 'User');
-    }
-
-    const keybindingsPath = path.join(userFolder, 'keybindings.json');
-    if (!fs.existsSync(keybindingsPath)) {
-      return defaultKey;
-    }
-
-    const content = fs.readFileSync(keybindingsPath, 'utf8');
-    const cleanContent = content.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
-    const bindings = JSON.parse(cleanContent);
-    if (Array.isArray(bindings)) {
-      const match = bindings.find((b: any) => b.command === 'vibefox.toggleRecording');
-      if (match && typeof match.key === 'string') {
-        return match.key.split('+').map((part: string) => part.trim().charAt(0).toUpperCase() + part.trim().slice(1)).join('+');
+  for (const appDir of appDirs) {
+    try {
+      let userFolder = '';
+      const home = os.homedir();
+      if (process.platform === 'darwin') {
+        userFolder = path.join(home, 'Library', 'Application Support', appDir, 'User');
+      } else if (process.platform === 'win32') {
+        const appdata = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+        userFolder = path.join(appdata, appDir, 'User');
+      } else {
+        userFolder = path.join(home, '.config', appDir, 'User');
       }
+
+      const keybindingsPath = path.join(userFolder, 'keybindings.json');
+      if (fs.existsSync(keybindingsPath)) {
+        const content = fs.readFileSync(keybindingsPath, 'utf8');
+        const cleanContent = content.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
+        const bindings = JSON.parse(cleanContent);
+        if (Array.isArray(bindings)) {
+          const match = bindings.find((b: any) => b.command === 'vibefox.toggleRecording');
+          if (match && typeof match.key === 'string') {
+            return match.key.split('+').map((part: string) => part.trim().charAt(0).toUpperCase() + part.trim().slice(1)).join('+');
+          }
+        }
+      }
+    } catch (err) {
+      // Continue searching in other app dirs
     }
-  } catch (err) {
-    // Silently fall back to default
   }
   return defaultKey;
 }
