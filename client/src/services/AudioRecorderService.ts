@@ -23,6 +23,11 @@ export interface RecorderOptions {
   audioDevice: string;
   /** ffmpeg-side hard duration cap (-t); the Controller's timer is the primary stop mechanism, this is a backstop. */
   maxSeconds: number;
+  // VAD options
+  vadEnabled?: boolean;
+  vadSilenceMs?: number;
+  vadMinDurationMs?: number;
+  onSegment?: (segmentMp3: Buffer) => void;
 }
 
 /** Exact runnable install command per platform (executed verbatim by the one-click install terminal). */
@@ -94,6 +99,10 @@ function probeFfmpeg(binary: string): Promise<boolean> {
 export class AudioRecorderService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private detectedOk: string | null = null; // Caches the resolved binary path once successfully probed.
+  private pcmChunks: Buffer[] = [];
+  private totalPcmBytes = 0;
+  private silentTimeMs = 0;
+  private lastFfmpegPath = '';
 
   get isRecording(): boolean {
     return this.child !== null;
@@ -127,8 +136,8 @@ export class AudioRecorderService {
   }
 
   /**
-   * Starts recording: MP3 / 16kHz / mono / ~32kbps streamed to stdout.
-   * Calls onChunk per data chunk (Controller forwards it into AudioState); calls onError on abnormal exit.
+   * Starts recording: MP3 / 16kHz / mono / ~32kbps streamed to stdout (or raw PCM if VAD is enabled).
+   * Calls onChunk per data chunk; calls onError on abnormal exit.
    */
   async start(
     options: RecorderOptions,
@@ -139,18 +148,35 @@ export class AudioRecorderService {
       throw new RecorderStartError('recorder already running');
     }
     const binary = await this.ensureFfmpeg(options.ffmpegPath);
+    this.lastFfmpegPath = binary;
+    this.pcmChunks = [];
+    this.totalPcmBytes = 0;
+    this.silentTimeMs = 0;
 
-    const args = [
-      '-hide_banner',
-      '-loglevel', 'error',
-      ...captureArgs(options.audioDevice),
-      '-t', String(options.maxSeconds + 2), // Backstop: Controller timer + ffmpeg's own duration cap.
-      '-ac', '1',
-      '-ar', '16000',
-      '-b:a', '32k',
-      '-f', 'mp3',
-      'pipe:1',
-    ];
+    const isVad = options.vadEnabled && options.onSegment;
+
+    const args = isVad
+      ? [
+          '-hide_banner',
+          '-loglevel', 'error',
+          ...captureArgs(options.audioDevice),
+          '-t', String(options.maxSeconds + 2),
+          '-ac', '1',
+          '-ar', '16000',
+          '-f', 's16le',
+          'pipe:1',
+        ]
+      : [
+          '-hide_banner',
+          '-loglevel', 'error',
+          ...captureArgs(options.audioDevice),
+          '-t', String(options.maxSeconds + 2),
+          '-ac', '1',
+          '-ar', '16000',
+          '-b:a', '32k',
+          '-f', 'mp3',
+          'pipe:1',
+        ];
 
     const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
@@ -159,7 +185,13 @@ export class AudioRecorderService {
     child.stderr.on('data', (data: Buffer) => {
       stderrTail = (stderrTail + data.toString()).slice(-500);
     });
-    child.stdout.on('data', (chunk: Buffer) => onChunk(chunk));
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (isVad) {
+        this.processPcmChunk(chunk, options, onChunk);
+      } else {
+        onChunk(chunk);
+      }
+    });
 
     child.once('error', (err) => {
       this.child = null;
@@ -193,22 +225,25 @@ export class AudioRecorderService {
   }
 
   /**
-   * Stops recording and waits for the process to exit and stdout to flush (MP3 trailer written in full).
-   * Graceful chain: stdin 'q' → SIGTERM → SIGKILL fallback after 2s.
+   * Stops recording and waits for the process to exit.
+   * If VAD was active, returns the remaining trailing PCM buffer compressed to MP3.
    */
-  async stop(): Promise<void> {
+  async stop(): Promise<Buffer | null> {
     const child = this.child;
     if (child === null) {
-      return;
+      return null;
     }
     this.child = null; // Null it first so the exit handler recognizes this as a deliberate stop.
+
+    const remainingPcm = this.pcmChunks.length > 0 ? Buffer.concat(this.pcmChunks) : null;
+    this.pcmChunks = [];
+    this.totalPcmBytes = 0;
 
     await new Promise<void>((resolve) => {
       const killTimer = setTimeout(() => {
         child.kill('SIGKILL');
       }, 2000);
       child.once('close', () => {
-        // 'close' fires after all stdio streams close, guaranteeing trailing chunks were flushed to onChunk.
         clearTimeout(killTimer);
         resolve();
       });
@@ -220,6 +255,17 @@ export class AudioRecorderService {
       }
       child.kill('SIGTERM');
     });
+
+    // If we have remaining PCM (longer than 200ms), compress and return it
+    if (remainingPcm && remainingPcm.byteLength > 3200 * 2) {
+      try {
+        const mp3 = await this.compressToMp3(remainingPcm, this.lastFfmpegPath);
+        return mp3;
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
 
   /** Cancel: kill immediately, don't care about trailing data. */
@@ -229,6 +275,107 @@ export class AudioRecorderService {
       return;
     }
     this.child = null;
+    this.pcmChunks = [];
+    this.totalPcmBytes = 0;
     child.kill('SIGKILL');
+  }
+
+  private processPcmChunk(
+    chunk: Buffer,
+    options: RecorderOptions,
+    onChunk: (chunk: Buffer) => void,
+  ): void {
+    this.pcmChunks.push(chunk);
+    this.totalPcmBytes += chunk.byteLength;
+
+    // Calculate volume average for the chunk
+    let sum = 0;
+    const numSamples = chunk.byteLength / 2;
+    if (numSamples > 0) {
+      for (let i = 0; i < chunk.byteLength; i += 2) {
+        sum += Math.abs(chunk.readInt16LE(i));
+      }
+      const average = sum / numSamples;
+      const durationMs = chunk.byteLength / 32;
+
+      const silenceThreshold = 350; // -35dB approx
+      if (average < silenceThreshold) {
+        this.silentTimeMs += durationMs;
+      } else {
+        this.silentTimeMs = 0;
+      }
+
+      const vadSilenceMs = options.vadSilenceMs ?? 1200;
+      const vadMinDurationMs = options.vadMinDurationMs ?? 3000;
+
+      if (this.silentTimeMs >= vadSilenceMs) {
+        const silenceBytes = this.silentTimeMs * 32;
+        const segmentLength = this.totalPcmBytes - silenceBytes;
+
+        if (segmentLength >= vadMinDurationMs * 32) {
+          const allPcm = Buffer.concat(this.pcmChunks);
+          const segmentPcm = allPcm.slice(0, segmentLength);
+          const trailingPcm = allPcm.slice(segmentLength);
+
+          this.pcmChunks = [trailingPcm];
+          this.totalPcmBytes = trailingPcm.byteLength;
+          this.silentTimeMs = 0; // reset silence timer for next segment
+
+          if (options.onSegment) {
+            void this.compressAndEmit(segmentPcm, options.onSegment);
+          }
+        }
+      }
+    }
+  }
+
+  private async compressAndEmit(pcm: Buffer, onSegment: (mp3: Buffer) => void): Promise<void> {
+    try {
+      const mp3 = await this.compressToMp3(pcm, this.lastFfmpegPath);
+      onSegment(mp3);
+    } catch {
+      // Ignore background compression errors
+    }
+  }
+
+  private async compressToMp3(pcmBuffer: Buffer, ffmpegPath: string): Promise<Buffer> {
+    return new Promise<Buffer>((resolve, reject) => {
+      const binary = ffmpegPath !== '' ? ffmpegPath : 'ffmpeg';
+      const args = [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-f', 's16le',
+        '-ar', '16000',
+        '-ac', '1',
+        '-i', 'pipe:0',
+        '-f', 'mp3',
+        'pipe:1',
+      ];
+      const compressor = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const mp3Chunks: Buffer[] = [];
+      let stderr = '';
+
+      compressor.stdout.on('data', (chunk: Buffer) => {
+        mp3Chunks.push(chunk);
+      });
+      compressor.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      compressor.once('error', (err) => {
+        reject(new Error(`Failed to start compression: ${err.message}`));
+      });
+
+      compressor.once('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`Compression failed (code ${code}): ${stderr}`));
+        } else {
+          resolve(Buffer.concat(mp3Chunks));
+        }
+      });
+
+      compressor.stdin.write(pcmBuffer);
+      compressor.stdin.end();
+    });
   }
 }

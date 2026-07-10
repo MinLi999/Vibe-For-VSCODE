@@ -24,6 +24,9 @@ interface VibeConfig {
   ffmpegPath: string;
   audioDevice: string;
   contextHint: boolean;
+  vadEnabled: boolean;
+  vadSilenceMs: number;
+  vadMinDurationMs: number;
 }
 
 export class VibeController implements vscode.Disposable {
@@ -125,6 +128,10 @@ export class VibeController implements vscode.Disposable {
           ffmpegPath: config.ffmpegPath,
           audioDevice: config.audioDevice,
           maxSeconds: config.maxRecordSeconds,
+          vadEnabled: config.vadEnabled,
+          vadSilenceMs: config.vadSilenceMs,
+          vadMinDurationMs: config.vadMinDurationMs,
+          onSegment: config.vadEnabled ? (segmentMp3) => void this.handleVadSegment(segmentMp3) : undefined,
         },
         (chunk) => this.audioState.appendChunk(chunk),
         (error) => {
@@ -156,26 +163,37 @@ export class VibeController implements vscode.Disposable {
     }
     this.clearAutoStop();
 
-    // Wait for ffmpeg to exit and flush trailing chunks (AudioState is still in the recording
-    // state receiving chunks at this point) before sealing the buffer.
-    await this.recorder.stop();
+    // Wait for ffmpeg to exit and flush trailing chunks (or return the final VAD MP3 segment)
+    const finalMp3 = await this.recorder.stop();
     this.audioState.beginProcessing();
     this.statusBar.showProcessing();
 
     try {
-      if (!this.audioState.hasAudio()) {
-        throw new RecorderStartError('没有录到音频(检查输入设备)');
-      }
-
       const config = this.readConfig();
       const licenseKey = await this.secrets.get(SECRET_KEY);
       if (licenseKey === undefined) {
         throw new ApiError('unauthorized', 'License key 已被清除,请重新设置');
       }
 
+      let audioBase64 = '';
+      if (config.vadEnabled && finalMp3 !== null) {
+        audioBase64 = finalMp3.toString('base64');
+      } else {
+        if (!this.audioState.hasAudio()) {
+          // In VAD mode, it is normal that the final segment is empty if silence split occurred right before stop.
+          if (config.vadEnabled) {
+            this.audioState.reset();
+            this.statusBar.showIdle();
+            return;
+          }
+          throw new RecorderStartError('没有录到音频(检查输入设备)');
+        }
+        audioBase64 = this.audioState.toBase64();
+      }
+
       const keywords = config.contextHint ? await this.collectKeywords() : [];
       const result = await this.api.transcribe(config.endpoint, licenseKey, {
-        audio: this.audioState.toBase64(),
+        audio: audioBase64,
         language: config.language,
         keywords,
       });
@@ -190,6 +208,27 @@ export class VibeController implements vscode.Disposable {
       this.audioState.reset();
       this.statusBar.flashResult('error', '转写失败');
       await this.reportTranscribeError(err);
+    }
+  }
+
+  private async handleVadSegment(segmentMp3: Buffer): Promise<void> {
+    const config = this.readConfig();
+    const licenseKey = await this.secrets.get(SECRET_KEY);
+    if (licenseKey === undefined) {
+      return;
+    }
+
+    try {
+      const keywords = config.contextHint ? await this.collectKeywords() : [];
+      const result = await this.api.transcribe(config.endpoint, licenseKey, {
+        audio: segmentMp3.toString('base64'),
+        language: config.language,
+        keywords,
+      });
+
+      await this.inserter.insert(result.text, config.insertTarget);
+    } catch {
+      // Ignore background transcription slice errors to prevent interrupting recording flow
     }
   }
 
@@ -299,6 +338,9 @@ export class VibeController implements vscode.Disposable {
       ffmpegPath: cfg.get<string>('ffmpegPath', '').trim(),
       audioDevice: cfg.get<string>('audioDevice', '').trim(),
       contextHint: cfg.get<boolean>('contextHint', true),
+      vadEnabled: cfg.get<boolean>('vadEnabled', true),
+      vadSilenceMs: cfg.get<number>('vadSilenceMs', 1200),
+      vadMinDurationMs: cfg.get<number>('vadMinDurationMs', 3000),
     };
   }
 
