@@ -189,7 +189,7 @@ export class CloudflareApiService {
                 {
                   type: 'input_audio',
                   input_audio: {
-                    data: `data:audio/mp3;base64,${audioBase64}`,
+                    data: audioBase64,
                     format: 'mp3',
                   },
                 },
