@@ -498,20 +498,35 @@ export class VibeController implements vscode.Disposable {
   // ── Misc ───────────────────────────────────────────────────
 
   private readConfig(): VibeConfig {
-    const cfg = vscode.workspace.getConfiguration('vibefox');
+    const cfgFox = vscode.workspace.getConfiguration('vibefox');
+    const cfgVibe = vscode.workspace.getConfiguration('vibe');
+
+    const getWithFallback = <T>(key: string, defaultValue: T): T => {
+      const inspectFox = cfgFox.inspect<T>(key);
+      const hasFoxCustom = inspectFox && (
+        inspectFox.globalValue !== undefined ||
+        inspectFox.workspaceValue !== undefined ||
+        inspectFox.workspaceFolderValue !== undefined
+      );
+      if (hasFoxCustom) {
+        return cfgFox.get<T>(key, defaultValue);
+      }
+      return cfgVibe.get<T>(key, defaultValue);
+    };
+
     return {
-      endpoint: cfg.get<string>('endpoint', '').trim(),
-      language: cfg.get<string>('language', 'zh'),
-      maxRecordSeconds: cfg.get<number>('maxRecordSeconds', 25),
-      insertTarget: cfg.get<InsertTarget>('insertTarget', 'auto'),
-      ffmpegPath: cfg.get<string>('ffmpegPath', '').trim(),
-      audioDevice: cfg.get<string>('audioDevice', '').trim(),
-      contextHint: cfg.get<boolean>('contextHint', true),
-      vadEnabled: cfg.get<boolean>('vadEnabled', true),
-      vadSilenceMs: cfg.get<number>('vadSilenceMs', 1200),
-      vadMinDurationMs: cfg.get<number>('vadMinDurationMs', 3000),
-      apiProvider: cfg.get<string>('apiProvider', 'cloudflare'),
-      customEndpoint: cfg.get<string>('customEndpoint', '').trim(),
+      endpoint: getWithFallback<string>('endpoint', '').trim(),
+      language: getWithFallback<string>('language', 'zh'),
+      maxRecordSeconds: getWithFallback<number>('maxRecordSeconds', 25),
+      insertTarget: getWithFallback<InsertTarget>('insertTarget', 'auto'),
+      ffmpegPath: getWithFallback<string>('ffmpegPath', '').trim(),
+      audioDevice: getWithFallback<string>('audioDevice', '').trim(),
+      contextHint: getWithFallback<boolean>('contextHint', true),
+      vadEnabled: getWithFallback<boolean>('vadEnabled', true),
+      vadSilenceMs: getWithFallback<number>('vadSilenceMs', 1200),
+      vadMinDurationMs: getWithFallback<number>('vadMinDurationMs', 3000),
+      apiProvider: getWithFallback<string>('apiProvider', 'cloudflare'),
+      customEndpoint: getWithFallback<string>('customEndpoint', '').trim(),
     };
   }
 
