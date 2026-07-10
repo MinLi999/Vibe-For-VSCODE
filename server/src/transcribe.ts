@@ -45,13 +45,14 @@ export function buildInitialPrompt(keywords: string[]): string | undefined {
     return undefined;
   }
 
-  const prefix = 'VibeFox, TypeScript, VS Code. 好的，我开始写代码。涉及的代码词汇和变量名有：';
-  const suffix = '。另外，在语气停顿处请加上标点符号（如逗号、句号、问号）。';
+  const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
+  const suffix = ' 这些。现在我要开始说一下修改思路。';
   const maxBytes = 800;
   let promptVal = prefix;
   const encoder = new TextEncoder();
   for (let i = 0; i < cleaned.length; i++) {
-    const part = (i === 0 ? '' : ', ') + cleaned[i];
+    const sep = i === 0 ? '' : '、';
+    const part = sep + cleaned[i];
     const candidate = promptVal + part + suffix;
     if (encoder.encode(candidate).length > maxBytes) {
       break;

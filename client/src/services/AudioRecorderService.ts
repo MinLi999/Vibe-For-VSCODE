@@ -174,7 +174,7 @@ export class AudioRecorderService {
           '-t', String(options.maxSeconds + 2),
           '-ac', '1',
           '-ar', '16000',
-          '-b:a', '32k',
+          '-b:a', '64k',
           '-f', 'mp3',
           'pipe:1',
         ];
