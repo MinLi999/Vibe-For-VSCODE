@@ -92,6 +92,25 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Extract identifiers from the active editor + recent filenames and send them as a vocabulary hint (Whisper `initial_prompt`) so code terms transcribe accurately."
+        },
+        "vibe.vadEnabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Enable client-side Voice Activity Detection (VAD) to split audio on silence and transcribe incrementally."
+        },
+        "vibe.vadSilenceMs": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 500,
+          "maximum": 5000,
+          "markdownDescription": "Silence threshold in milliseconds to trigger a split."
+        },
+        "vibe.vadMinDurationMs": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 1000,
+          "maximum": 15000,
+          "markdownDescription": "Minimum audio segment duration in milliseconds before allowing a split."
         }
       }
     }
