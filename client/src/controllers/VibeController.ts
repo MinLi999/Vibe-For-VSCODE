@@ -206,6 +206,21 @@ export class VibeController implements vscode.Disposable {
       }
     } catch (err) {
       this.audioState.reset();
+      
+      const config = this.readConfig();
+      if (config.vadEnabled) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (
+          errMsg.includes('no text') ||
+          errMsg.includes('silent') ||
+          errMsg.includes('empty') ||
+          errMsg.includes('502')
+        ) {
+          this.statusBar.showIdle();
+          return;
+        }
+      }
+
       this.statusBar.flashResult('error', '转写失败');
       await this.reportTranscribeError(err);
     }
