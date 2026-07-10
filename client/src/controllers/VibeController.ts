@@ -641,8 +641,9 @@ export class VibeController implements vscode.Disposable {
     // Helper to extract words and convert casing
     const toCamelCase = (str: string): string => {
       const words = str.split(/\s+/).filter(Boolean);
-      if (words.length === 0) return '';
-      return words[0].toLowerCase() + words.slice(1).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join('');
+      const firstWord = words[0];
+      if (firstWord === undefined) return '';
+      return firstWord.toLowerCase() + words.slice(1).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join('');
     };
 
     const toPascalCase = (str: string): string => {
