@@ -19,7 +19,7 @@ import { WorkspaceContextService } from '../services/WorkspaceContextService';
 
 export function getActiveKeybinding(): string {
   const defaultKey = 'Ctrl+Shift+Space';
-  const appDirs = ['Cursor', 'Code', 'Code - Insiders', 'VSCodium'];
+  const appDirs = ['Antigravity IDE', 'Cursor', 'Code', 'Code - Insiders', 'VSCodium'];
 
   for (const appDir of appDirs) {
     try {
