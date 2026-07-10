@@ -134,6 +134,44 @@
           "minimum": 1000,
           "maximum": 15000,
           "markdownDescription": "Minimum audio segment duration in milliseconds before allowing a split."
+        },
+        "vibefox.llmCorrectionEnabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Enable LLM post-processing correction on transcribed text to add proper punctuation, fix identifier spellings based on vocabulary hints, and remove verbal fillers."
+        },
+        "vibefox.llmCorrectionProvider": {
+          "type": "string",
+          "enum": ["auto", "groq", "openai", "aliyun", "custom"],
+          "default": "auto",
+          "enumDescriptions": [
+            "Use the active API provider",
+            "Use Groq LLM",
+            "Use OpenAI LLM",
+            "Use Aliyun Qwen LLM",
+            "Use a custom chat completion URL"
+          ],
+          "markdownDescription": "The LLM provider to use for text correction. If auto, maps to the active transcription provider."
+        },
+        "vibefox.llmCorrectionModel": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional model name override for LLM correction (e.g. llama-3.3-70b-versatile, gpt-4o-mini). If empty, standard default model is selected based on the provider."
+        },
+        "vibefox.llmCorrectionPrompt": {
+          "type": "string",
+          "default": "你是一个编程语音转文字后处理器。用户用中文口述编程意图。请修正转写文本中的错误标点符号（在语气停顿处补充逗号、句号），修复代码标识符拼写错误（参考词表中的名字进行匹配替换，保证拼写和大小写完全一致），并去除口语填充词（如：啊、嗯、那个、就是说）。不要改变用户原意，直接输出修正后的文本，不要带有任何解释、问候或Markdown包裹符号。",
+          "markdownDescription": "The system prompt sent to the LLM to guide text correction."
+        },
+        "vibefox.llmCorrectionCustomEndpoint": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The custom chat completions endpoint URL when llmCorrectionProvider is set to custom."
+        },
+        "vibefox.developerModeEnabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Enable Developer Mode rule-based formatting (e.g. converting 'dot ts' to '.ts', converting 'camel case user profile' to 'userProfile', and converting spoken punctuation words)."
         }
       }
     }

@@ -68,11 +68,18 @@ interface VibeConfig {
   vadMinDurationMs: number;
   apiProvider: string;
   customEndpoint: string;
+  llmCorrectionEnabled: boolean;
+  llmCorrectionProvider: string;
+  llmCorrectionModel: string;
+  llmCorrectionPrompt: string;
+  llmCorrectionCustomEndpoint: string;
+  developerModeEnabled: boolean;
 }
 
 export class VibeController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private autoStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastVadTranscript: string = '';
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -192,6 +199,7 @@ export class VibeController implements vscode.Disposable {
     }
 
     this.audioState.beginRecording();
+    this.lastVadTranscript = '';
     this.statusBar.showRecording(() => this.audioState.elapsedSeconds, config.maxRecordSeconds);
 
     try {
@@ -259,11 +267,24 @@ export class VibeController implements vscode.Disposable {
       }
 
       const keywords = config.contextHint ? await this.collectKeywords() : [];
-      const text = await this.transcribeWithProvider(config, audioBase64, keywords);
+      const text = await this.transcribeWithProvider(config, audioBase64, keywords, this.lastVadTranscript);
 
-      const outcome = await this.inserter.insert(text, config.insertTarget);
-      this.audioState.completeWithText(text);
-      this.statusBar.flashResult('ok', `已插入 ${text.length} 字`);
+      let finalText = text;
+      if (config.llmCorrectionEnabled) {
+        finalText = await this.correctTextWithProvider(config, text, keywords);
+      }
+
+      if (config.developerModeEnabled) {
+        finalText = this.applyDeveloperModeRules(finalText);
+      }
+
+      if (finalText.trim().length > 0) {
+        this.lastVadTranscript = (this.lastVadTranscript + ' ' + finalText).trim();
+      }
+
+      const outcome = await this.inserter.insert(finalText, config.insertTarget);
+      this.audioState.completeWithText(finalText);
+      this.statusBar.flashResult('ok', `已插入 ${finalText.length} 字`);
       if (outcome.via === 'clipboard' || outcome.via === 'chat') {
         void vscode.window.showInformationMessage('VibeFox:转写结果已复制到剪贴板,如果聊天框未自动填入,可直接粘贴(⌘V / Ctrl+V)');
       }
@@ -293,9 +314,22 @@ export class VibeController implements vscode.Disposable {
     const config = this.readConfig();
     try {
       const keywords = config.contextHint ? await this.collectKeywords() : [];
-      const text = await this.transcribeWithProvider(config, segmentMp3.toString('base64'), keywords);
-      void vscode.window.showInformationMessage(`VibeFox 识别成功: [${text}]`);
-      await this.inserter.insert(text, config.insertTarget);
+      const text = await this.transcribeWithProvider(config, segmentMp3.toString('base64'), keywords, this.lastVadTranscript);
+
+      let finalText = text;
+      if (config.llmCorrectionEnabled) {
+        finalText = await this.correctTextWithProvider(config, text, keywords);
+      }
+
+      if (config.developerModeEnabled) {
+        finalText = this.applyDeveloperModeRules(finalText);
+      }
+
+      if (finalText.trim().length > 0) {
+        this.lastVadTranscript = (this.lastVadTranscript + ' ' + finalText).trim();
+        void vscode.window.showInformationMessage(`VibeFox 识别成功: [${finalText}]`);
+        await this.inserter.insert(finalText, config.insertTarget);
+      }
     } catch (err) {
       console.error('[VibeFox VAD Segment ASR Error]', err);
       void vscode.window.showErrorMessage(`VibeFox 语音转写错误: ${err instanceof Error ? err.message : String(err)}`);
@@ -305,7 +339,8 @@ export class VibeController implements vscode.Disposable {
   private async transcribeWithProvider(
     config: VibeConfig,
     audioBase64: string,
-    keywords: string[]
+    keywords: string[],
+    previousTranscript?: string
   ): Promise<string> {
     const provider = config.apiProvider;
     if (provider === 'cloudflare') {
@@ -313,10 +348,15 @@ export class VibeController implements vscode.Disposable {
       if (licenseKey === undefined) {
         throw new ApiError('unauthorized', 'License key 已被清除,请重新设置');
       }
+      const useLlmCorrection = config.llmCorrectionEnabled && (config.llmCorrectionProvider === 'auto' || config.llmCorrectionProvider === 'cloudflare');
       const result = await this.api.transcribe(config.endpoint, licenseKey, {
         audio: audioBase64,
         language: config.language,
         keywords,
+        previousTranscript,
+        llmCorrect: useLlmCorrection,
+        llmPrompt: config.llmCorrectionPrompt,
+        llmModel: config.llmCorrectionModel
       });
       return result.text;
     } else if (provider === 'groq') {
@@ -324,26 +364,70 @@ export class VibeController implements vscode.Disposable {
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', 'Groq API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      return this.api.transcribeGroq(apiKey, audioBase64, config.language, keywords);
+      return this.api.transcribeGroq(apiKey, audioBase64, config.language, keywords, previousTranscript);
     } else if (provider === 'openai') {
       const apiKey = await this.secrets.get('vibefox.openaiKey');
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', 'OpenAI API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      return this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords);
+      return this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords, previousTranscript);
     } else if (provider === 'aliyun') {
       const apiKey = await this.secrets.get('vibefox.aliyunKey');
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', '阿里云 API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      return this.api.transcribeAliyun(config.endpoint, apiKey, audioBase64, config.language, keywords);
+      return this.api.transcribeAliyun(config.endpoint, apiKey, audioBase64, config.language, keywords, previousTranscript);
     } else if (provider === 'custom') {
       if (!config.customEndpoint) {
         throw new Error('自定义服务地址 (vibefox.customEndpoint) 未配置');
       }
-      return this.api.transcribeCustom(config.customEndpoint, audioBase64, config.language, keywords);
+      return this.api.transcribeCustom(config.customEndpoint, audioBase64, config.language, keywords, previousTranscript);
     }
     throw new Error(`不支持的 API Provider: ${provider}`);
+  }
+
+  private async correctTextWithProvider(
+    config: VibeConfig,
+    text: string,
+    keywords: string[]
+  ): Promise<string> {
+    const provider = config.llmCorrectionProvider === 'auto' ? config.apiProvider : config.llmCorrectionProvider;
+
+    // If both transcription and correction use cloudflare, it was already corrected server-side, so skip.
+    if (provider === 'cloudflare' && config.apiProvider === 'cloudflare') {
+      return text;
+    }
+
+    if (provider === 'groq') {
+      const apiKey = await this.secrets.get('vibefox.groqKey');
+      if (apiKey === undefined) {
+        throw new Error('Groq API Key 未设置，无法进行 LLM 后处理');
+      }
+      const model = config.llmCorrectionModel || 'llama-3.3-70b-versatile';
+      return this.api.llmCorrectOpenAICompatible('https://api.groq.com/openai/v1', apiKey, model, text, keywords, config.llmCorrectionPrompt);
+    } else if (provider === 'openai') {
+      const apiKey = await this.secrets.get('vibefox.openaiKey');
+      if (apiKey === undefined) {
+        throw new Error('OpenAI API Key 未设置，无法进行 LLM 后处理');
+      }
+      const model = config.llmCorrectionModel || 'gpt-4o-mini';
+      return this.api.llmCorrectOpenAICompatible('https://api.openai.com/v1', apiKey, model, text, keywords, config.llmCorrectionPrompt);
+    } else if (provider === 'aliyun') {
+      const apiKey = await this.secrets.get('vibefox.aliyunKey');
+      if (apiKey === undefined) {
+        throw new Error('阿里云 API Key 未设置，无法进行 LLM 后处理');
+      }
+      const model = config.llmCorrectionModel || 'qwen-turbo';
+      return this.api.llmCorrectOpenAICompatible('https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey, model, text, keywords, config.llmCorrectionPrompt);
+    } else if (provider === 'custom') {
+      const endpoint = config.llmCorrectionCustomEndpoint || config.customEndpoint;
+      if (!endpoint) {
+        throw new Error('自定义 LLM 后处理端点未配置');
+      }
+      return this.api.llmCorrectOpenAICompatible(endpoint, '', config.llmCorrectionModel, text, keywords, config.llmCorrectionPrompt);
+    }
+    
+    return text;
   }
 
   /**
@@ -527,6 +611,15 @@ export class VibeController implements vscode.Disposable {
       vadMinDurationMs: getWithFallback<number>('vadMinDurationMs', 3000),
       apiProvider: getWithFallback<string>('apiProvider', 'cloudflare'),
       customEndpoint: getWithFallback<string>('customEndpoint', '').trim(),
+      llmCorrectionEnabled: getWithFallback<boolean>('llmCorrectionEnabled', false),
+      llmCorrectionProvider: getWithFallback<string>('llmCorrectionProvider', 'auto'),
+      llmCorrectionModel: getWithFallback<string>('llmCorrectionModel', ''),
+      llmCorrectionPrompt: getWithFallback<string>(
+        'llmCorrectionPrompt',
+        '你是一个编程语音转文字后处理器。用户用中文口述编程意图。请修正转写文本中的错误标点符号（在语气停顿处补充逗号、句号），修复代码标识符拼写错误（参考词表中的名字进行匹配替换，保证拼写和大小写完全一致），并去除口语填充词（如：啊、嗯、那个、就是说）。不要改变用户原意，直接输出修正后的文本，不要带有任何解释、问候或Markdown包裹符号。'
+      ),
+      llmCorrectionCustomEndpoint: getWithFallback<string>('llmCorrectionCustomEndpoint', '').trim(),
+      developerModeEnabled: getWithFallback<boolean>('developerModeEnabled', true),
     };
   }
 
@@ -535,6 +628,89 @@ export class VibeController implements vscode.Disposable {
       clearTimeout(this.autoStopTimer);
       this.autoStopTimer = null;
     }
+  }
+
+  private applyDeveloperModeRules(text: string): string {
+    let result = text;
+
+    // 1. File extensions: "dot ts" / "点 ts" -> ".ts" (case-insensitive, optional spaces)
+    result = result.replace(/\b(?:dot|点|\\.)\s*(ts|js|json|py|css|html|md|tsx|jsx|sh|yaml|yml|rs|go|c|cpp|h|txt|log)\b/gi, (match, ext) => {
+      return `.${ext.toLowerCase()}`;
+    });
+
+    // Helper to extract words and convert casing
+    const toCamelCase = (str: string): string => {
+      const words = str.split(/\s+/).filter(Boolean);
+      if (words.length === 0) return '';
+      return words[0].toLowerCase() + words.slice(1).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join('');
+    };
+
+    const toPascalCase = (str: string): string => {
+      const words = str.split(/\s+/).filter(Boolean);
+      return words.map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join('');
+    };
+
+    const toSnakeCase = (str: string): string => {
+      const words = str.split(/\s+/).filter(Boolean);
+      return words.map(w => w.toLowerCase()).join('_');
+    };
+
+    const toKebabCase = (str: string): string => {
+      const words = str.split(/\s+/).filter(Boolean);
+      return words.map(w => w.toLowerCase()).join('-');
+    };
+
+    // 2. Case conversions
+    // Matches patterns like "驼峰命名 auth middleware", "camel case auth middleware", "小驼峰 auth middleware"
+    result = result.replace(/(?:camel\s*case|驼峰(?:命名)?|小驼峰)\s*([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*)/gi, (match, target) => {
+      return toCamelCase(target);
+    });
+
+    result = result.replace(/(?:pascal\s*case|大驼峰|帕斯卡(?:命名)?)\s*([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*)/gi, (match, target) => {
+      return toPascalCase(target);
+    });
+
+    result = result.replace(/(?:snake\s*case|下划线(?:命名)?|蛇形(?:命名)?)\s*([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*)/gi, (match, target) => {
+      return toSnakeCase(target);
+    });
+
+    result = result.replace(/(?:kebab\s*case|中划线(?:命名)?|短横线(?:命名)?|脊柱(?:命名)?)\s*([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*)/gi, (match, target) => {
+      return toKebabCase(target);
+    });
+
+    // 3. Spoken punctuation conversions
+    const punctuationMap: [RegExp, string][] = [
+      [/双等号/g, '=='],
+      [/三等号/g, '==='],
+      [/等号/g, '='],
+      [/大于等于/g, '>='],
+      [/小于等于/g, '<='],
+      [/大于/g, '>'],
+      [/小于/g, '<'],
+      [/加号/g, '+'],
+      [/减号/g, '-'],
+      [/乘号/g, '*'],
+      [/除号/g, '/'],
+      [/左括号/g, '('],
+      [/右括号/g, ')'],
+      [/左大括号|左花括号/g, '{'],
+      [/右大括号|右花括号/g, '}'],
+      [/左中括号|左方括号/g, '['],
+      [/右中括号|右方括号/g, ']'],
+      [/单引号/g, "'"],
+      [/双引号/g, '"'],
+      [/反引号/g, '`'],
+      [/分号/g, ';'],
+      [/冒号/g, ':'],
+      [/斜杠/g, '/'],
+      [/反斜杠/g, '\\']
+    ];
+
+    for (const [regex, replacement] of punctuationMap) {
+      result = result.replace(regex, replacement);
+    }
+
+    return result;
   }
 
   dispose(): void {

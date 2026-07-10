@@ -2,10 +2,14 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 1 精度提升 + Chat 兼容性审计完成(2026-07-10)。
-**健康度**:🟢 竞品对标分析完成,6 项精度/兼容性改进已上线,双端编译/类型检查全绿。
+**阶段**:Phase 2 精度与语法提升完成 & 线上部署通过 (2026-07-10)。
+**健康度**:🟢 客户端大模型纠错、VAD上下文继承、Developer Mode 语法规则引擎已全部落地并完成 wrangler 线上部署，双端编译与打包正常。
 
 ## 最近完成
+- 2026-07-10:Phase 2 —— 精度与语法提升方案全量交付与部署：
+  ① **LLM 二次后处理校正**：集成跨服务商的 LLM 后处理引擎。支持通过 `vibefox.llmCorrectionEnabled` 开启，对转写内容执行标点修复、词表拼写校准及固定填充词滤除。针对 Cloudflare 托管 Worker 链路，直接在服务端调用 `@cf/meta/llama-3.1-8b-instruct` 以免去客户端额外调用与 Key 开销，非 Cloudflare 链路在客户端二次执行兼容调用。
+  ② **VAD 分段上下文继承**：实现 previous-text conditioning。将前一分段经处理后的转录文本作为下一分段的 prompt 前文，并在 800 字节 prompt 预算限制内动态与 Keywords 混编，彻底解决 VAD 断句后上下文失联与漏字现象。
+  ③ **Developer Mode 规则引擎**：独立实现词法级规则解析引擎。支持高频口述符号转义（如“等号”->“=”，“左大括号”->“{”）以及智能命名风格转换（如“驼峰命名 auth middleware” -> “authMiddleware”，“点 ts” -> “.ts”），大幅减少语音转写后的手工微调。
 - 2026-07-10:Phase 1 —— 竞品分析 × 精度优化 × Chat 兼容性审计全量交付：
   ① **竞品全景对标**：深度分析 6 款竞品(VS Code Speech 137 万安装 / Mantra / VoxPilot / WisprFlow $15/月 / Voibe $149 买断)，确认 VibeFox 的核心差异化：中文编程唯一深度优化 + 代码上下文词表注入 + 多 Chat 面板兼容 + 5 种 API 后端 + 免费。
   ② **精度优化 3 连击**：(a) 显式传入 `temperature=0` 消除 Whisper 随机性;(b) MP3 比特率从 32kbps 提升到 64kbps 改善中文声母韵母辨识度;(c) `initial_prompt` 从指令式改为自然转录前文风格(Whisper 将 prompt 视为"前一段转录文本"而非指令)。
@@ -30,10 +34,10 @@
 - 2026-07-08:线上冒烟测试通过 —— 无 auth→401、假 key→403、错路径→404,均与本地 wrangler dev 行为一致。200(真实转写)路径留给用户在扩展内用真实录音验证,避免密钥经对话记录暴露。
 - 2026-07-08:DoD 全项通过;顺手修复 docs/03-DOD.md 里一处检查命令的假阴性(双引号 `"zh"` 匹配不到源码里的单引号字符串,已改为 `= 'zh'`)。
 
-## 下一步 (Phase 2)
-1. LLM 二次后处理校正（可选功能）— 用轻量 LLM 做一次快速纠错（标点补充 + 标识符拼写修正 + 填充词去除）。
-2. VAD 分段间 previous-text conditioning — 将前一段转写结果作为下一段的 prompt 上下文。
-3. Developer Mode 语法解析规则引擎 — "auth middleware dot ts" → `authMiddleware.ts`。
+## 下一步 (Phase 3)
+1. 离线本地 Whisper 模式（集成 whisper.cpp / ONNX Runtime 等）。
+2. WebSocket 实时流式转写支持。
+3. 中英混合多语言自动识别切换优化。
 
 ## 阻塞
 - 无硬阻塞。Windows/Linux 录音路径(dshow/pulse)代码就位但本机(macOS)无法实测。
