@@ -255,6 +255,7 @@ export class VibeController implements vscode.Disposable {
     try {
       const keywords = config.contextHint ? await this.collectKeywords() : [];
       const text = await this.transcribeWithProvider(config, segmentMp3.toString('base64'), keywords);
+      void vscode.window.showInformationMessage(`Vibe 识别成功: [${text}]`);
       await this.inserter.insert(text, config.insertTarget);
     } catch (err) {
       console.error('[Vibe VAD Segment ASR Error]', err);
