@@ -123,7 +123,19 @@ export class CloudflareApiService {
       formData.append('model', model);
       formData.append('language', language);
       if (keywords.length > 0) {
-        formData.append('prompt', `涉及的英文专业词汇如下：${keywords.join(', ')}。`);
+        const prefix = '涉及的英文专业词汇如下：';
+        const suffix = '。';
+        const maxLen = 800;
+        let promptVal = prefix;
+        for (let i = 0; i < keywords.length; i++) {
+          const part = (i === 0 ? '' : ', ') + keywords[i];
+          if (promptVal.length + part.length + suffix.length > maxLen) {
+            break;
+          }
+          promptVal += part;
+        }
+        promptVal += suffix;
+        formData.append('prompt', promptVal);
       }
 
       const response = await fetch(url, {
