@@ -181,23 +181,37 @@ export class CloudflareApiService {
     const submitUrl = `${baseDomain}/api/v1/services/audio/asr/transcription`;
 
     // 1. Submit asynchronous transcription task
-    const submitResponse = await fetch(submitUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'X-DashScope-Async': 'enable',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'paraformer-v2',
-        input: {
-          file_urls: [`data:audio/mp3;base64,${audioBase64}`],
+    const submitController = new AbortController();
+    const submitTimeout = setTimeout(() => submitController.abort(), 12000); // 12s timeout for cross-border upload
+    let submitResponse: Response;
+
+    try {
+      submitResponse = await fetch(submitUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'X-DashScope-Async': 'enable',
+          'Content-Type': 'application/json',
         },
-        parameters: {
-          language_hints: [language || 'zh'],
-        },
-      }),
-    });
+        body: JSON.stringify({
+          model: 'paraformer-v2',
+          input: {
+            file_urls: [`data:audio/mp3;base64,${audioBase64}`],
+          },
+          parameters: {
+            language_hints: [language || 'zh'],
+          },
+        }),
+        signal: submitController.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ApiError('timeout', '提交转写任务网络超时(12s)，请检查到阿里云的网络连接');
+      }
+      throw new ApiError('network', `提交转写任务连接失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(submitTimeout);
+    }
 
     if (!submitResponse.ok) {
       let errDetail = `HTTP ${submitResponse.status}`;
@@ -222,16 +236,29 @@ export class CloudflareApiService {
     const taskUrl = `${baseDomain}/api/v1/tasks/${taskId}`;
     let status = 'PENDING';
     let results: { transcription_url?: string }[] = [];
-    const maxPollAttempts = 40; // 40 attempts * 150ms = 6 seconds max
+    const maxPollAttempts = 40; // 40 attempts * 200ms = 8 seconds max
     
     for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
-      const pollResponse = await fetch(taskUrl, {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-        },
-      });
+      const pollController = new AbortController();
+      const pollTimeout = setTimeout(() => pollController.abort(), 6000); // 6s timeout per poll
+      let pollResponse: Response;
+
+      try {
+        pollResponse = await fetch(taskUrl, {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+          signal: pollController.signal,
+        });
+      } catch (err) {
+        // Log poll connection issues and try again on next attempt
+        console.warn(`[Vibe Poll Warning] Attempt ${attempt} failed:`, err);
+        continue;
+      } finally {
+        clearTimeout(pollTimeout);
+      }
 
       if (!pollResponse.ok) {
         throw new ApiError('server', `轮询任务状态失败: HTTP ${pollResponse.status}`, pollResponse.status);
@@ -260,7 +287,23 @@ export class CloudflareApiService {
     }
 
     // 3. Fetch transcription JSON from transcription_url
-    const resultResponse = await fetch(transcriptionUrl);
+    const resultController = new AbortController();
+    const resultTimeout = setTimeout(() => resultController.abort(), 8000); // 8s timeout to download result
+    let resultResponse: Response;
+
+    try {
+      resultResponse = await fetch(transcriptionUrl, {
+        signal: resultController.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ApiError('timeout', '下载转写结果超时(8s)，请重试');
+      }
+      throw new ApiError('network', `下载转写结果失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(resultTimeout);
+    }
+
     if (!resultResponse.ok) {
       throw new ApiError('server', `获取转写文件失败: HTTP ${resultResponse.status}`);
     }
