@@ -256,8 +256,20 @@ export class AudioRecorderService {
       child.kill('SIGTERM');
     });
 
-    // If we have remaining PCM (longer than 200ms), compress and return it
+    // If we have remaining PCM (longer than 200ms), check if it is loud enough to contain speech (silence threshold = 350)
     if (remainingPcm && remainingPcm.byteLength > 3200 * 2) {
+      let sum = 0;
+      const numSamples = remainingPcm.byteLength / 2;
+      for (let i = 0; i < remainingPcm.byteLength; i += 2) {
+        sum += Math.abs(remainingPcm.readInt16LE(i));
+      }
+      const average = sum / numSamples;
+
+      // Discard silent trailing segments to avoid Whisper hallucinations on background noise/clicks
+      if (average < 350) {
+        return null;
+      }
+
       try {
         const mp3 = await this.compressToMp3(remainingPcm, this.lastFfmpegPath);
         return mp3;

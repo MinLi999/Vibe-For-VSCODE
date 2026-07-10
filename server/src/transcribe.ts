@@ -45,7 +45,7 @@ export function buildInitialPrompt(keywords: string[]): string | undefined {
     return undefined;
   }
 
-  const prompt = `以下是一段关于编程的中文口述,可能提及这些标识符:${cleaned.join(', ')}。`;
+  const prompt = `以下是一段中文编程口述，请根据说话语气在适当的位置加上标点符号（如“，”、“。”、“？”），可能涉及的英文标识符如下：${cleaned.join(', ')}。`;
   return prompt.length > MAX_INITIAL_PROMPT_CHARS ? prompt.slice(0, MAX_INITIAL_PROMPT_CHARS) : prompt;
 }
 
