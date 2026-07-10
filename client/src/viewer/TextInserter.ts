@@ -79,13 +79,19 @@ export class TextInserter {
     // Always copy to clipboard as a fallback/safety net first, in case it's a custom webview chat
     await this.intoClipboard(text);
 
-    // Try executing all known chat panel focus commands sequentially
+    // Try executing known chat panel focus commands — stop at the first success.
+    // Order: Antigravity (Gemini) → Cursor → Copilot → Cline → Continue → Cody → Amazon Q → Windsurf
     const chatCommands = [
-      'cloudcode.gemini.chatView.focus',
-      'workbench.view.extension.geminiChat',
-      'composer.openOrFocus',
-      'aichat.newfollowupaction',
-      'composerMode.agent',
+      'cloudcode.gemini.chatView.focus',        // Antigravity IDE (Gemini Chat)
+      'workbench.view.extension.geminiChat',     // Antigravity IDE (alt)
+      'composer.openOrFocus',                    // Cursor Composer
+      'aichat.newfollowupaction',                // Cursor AIChat
+      'composerMode.agent',                      // Cursor Agent Mode
+      'cline.plusButtonClicked',                  // Cline (Claude Dev)
+      'continue.focusContinueInput',             // Continue
+      'cody.chat.focus',                         // Sourcegraph Cody
+      'aws.amazonq.chat.focus',                  // Amazon Q
+      'cascade.openOrFocus',                     // Windsurf (Cascade)
     ];
 
     let focused = false;
@@ -93,8 +99,9 @@ export class TextInserter {
       try {
         await vscode.commands.executeCommand(cmd);
         focused = true;
+        break;  // Stop at the first successful command — don't fire the rest
       } catch {
-        // Ignore and try next
+        // Command not available in this IDE; try next
       }
     }
 
@@ -105,6 +112,8 @@ export class TextInserter {
           query: text,
           isPartialQuery: true,
         });
+        // Copilot Chat has a native query API, so we return early — no need for AppleScript paste
+        return { via: 'chat' };
       } catch (err) {
         // Ignore built-in Copilot Chat open failure
       }

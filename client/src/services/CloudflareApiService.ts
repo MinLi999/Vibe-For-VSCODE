@@ -122,14 +122,19 @@ export class CloudflareApiService {
       formData.append('file', blob, 'audio.mp3');
       formData.append('model', model);
       formData.append('language', language);
+      formData.append('temperature', '0');
       if (keywords.length > 0) {
-        const prefix = 'VibeFox, TypeScript, VS Code. 好的，我开始写代码。涉及的代码词汇和变量名有：';
-        const suffix = '。另外，在语气停顿处请加上标点符号（如逗号、句号、问号）。';
+        // Whisper treats prompt as "preceding transcript text", not instructions.
+        // A natural Chinese transcript style with code terms biases the model to
+        // continue in the same style — including punctuation and identifier spelling.
+        const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
+        const suffix = ' 这些。现在我要开始说一下修改思路。';
         const maxBytes = 800;
         let promptVal = prefix;
         const encoder = new TextEncoder();
         for (let i = 0; i < keywords.length; i++) {
-          const part = (i === 0 ? '' : ', ') + keywords[i];
+          const sep = i === 0 ? '' : '、';
+          const part = sep + keywords[i];
           const candidate = promptVal + part + suffix;
           if (encoder.encode(candidate).length > maxBytes) {
             break;
