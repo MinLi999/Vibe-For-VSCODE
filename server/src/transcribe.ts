@@ -45,8 +45,21 @@ export function buildInitialPrompt(keywords: string[]): string | undefined {
     return undefined;
   }
 
-  const prompt = `VibeFox, TypeScript, VS Code. 好的，我开始写代码。涉及的代码词汇和变量名有：${cleaned.join(', ')}。另外，在语气停顿处请加上标点符号（如逗号、句号、问号）。`;
-  return prompt.length > MAX_INITIAL_PROMPT_CHARS ? prompt.slice(0, MAX_INITIAL_PROMPT_CHARS) : prompt;
+  const prefix = 'VibeFox, TypeScript, VS Code. 好的，我开始写代码。涉及的代码词汇和变量名有：';
+  const suffix = '。另外，在语气停顿处请加上标点符号（如逗号、句号、问号）。';
+  const maxBytes = 800;
+  let promptVal = prefix;
+  const encoder = new TextEncoder();
+  for (let i = 0; i < cleaned.length; i++) {
+    const part = (i === 0 ? '' : ', ') + cleaned[i];
+    const candidate = promptVal + part + suffix;
+    if (encoder.encode(candidate).length > maxBytes) {
+      break;
+    }
+    promptVal += part;
+  }
+  promptVal += suffix;
+  return promptVal;
 }
 
 /** Validates and normalizes the request body; throws HttpError directly if invalid. */

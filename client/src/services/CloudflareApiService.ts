@@ -125,11 +125,13 @@ export class CloudflareApiService {
       if (keywords.length > 0) {
         const prefix = 'VibeFox, TypeScript, VS Code. 好的，我开始写代码。涉及的代码词汇和变量名有：';
         const suffix = '。另外，在语气停顿处请加上标点符号（如逗号、句号、问号）。';
-        const maxLen = 800;
+        const maxBytes = 800;
         let promptVal = prefix;
+        const encoder = new TextEncoder();
         for (let i = 0; i < keywords.length; i++) {
           const part = (i === 0 ? '' : ', ') + keywords[i];
-          if (promptVal.length + part.length + suffix.length > maxLen) {
+          const candidate = promptVal + part + suffix;
+          if (encoder.encode(candidate).length > maxBytes) {
             break;
           }
           promptVal += part;
