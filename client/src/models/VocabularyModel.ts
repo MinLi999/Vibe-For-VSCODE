@@ -31,31 +31,94 @@ export interface EditorContextInput {
   documents: DocumentContext[];
   /** Recent workspace filenames (with extension). */
   fileNames: string[];
+  activeDocumentKey?: string;
 }
 
 export class VocabularyModel {
   private docFreqCache = new Map<string, Map<string, number>>();
 
+  private tokensOf(doc: DocumentContext): string[] {
+    let freq = this.docFreqCache.get(doc.key);
+    if (freq === undefined) {
+      freq = new Map<string, number>();
+      for (const match of doc.text.matchAll(IDENTIFIER_PATTERN)) {
+        const token = match[0];
+        if (STOP_WORDS.has(token.toLowerCase())) {
+          continue;
+        }
+        freq.set(token, (freq.get(token) ?? 0) + 1);
+      }
+      this.docFreqCache.set(doc.key, freq);
+    }
+    return [...freq.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 30)
+      .map(([token]) => token);
+  }
+
   /**
-   * Extracts top-40 identifiers + workspace keywords + filename stems, returning a deduplicated vocabulary
-   * (injected as `keywords` in the API request).
+   * Extracts context vocabulary prioritizing:
+   * 1. Active editor document tokens (cursor context)
+   * 2. Global project workspace keywords (class/method symbols from entire project)
+   * 3. Other open document tokens (other tabs context)
+   * 4. Filename stems (tab names context)
    */
   extractKeywords(input: EditorContextInput, workspaceKeywords: string[] = []): string[] {
-    const documentTokens = this.tokensAcrossDocuments(input);
-    const fileStems = input.fileNames
-      .map((name) => stemOfFileName(name))
-      .filter((stem): stem is string => stem !== null);
-
-    // Document tokens take priority (most relevant to spoken content); then workspace keywords (global project vocabulary); then filename stems fill in; dedupe overall.
-    const merged: string[] = [];
     const seen = new Set<string>();
-    for (const token of [...documentTokens, ...workspaceKeywords, ...fileStems]) {
+    const merged: string[] = [];
+
+    const addToken = (token: string) => {
       const lower = token.toLowerCase();
       if (!seen.has(lower)) {
         seen.add(lower);
         merged.push(token);
       }
+    };
+
+    // 1. Active document tokens (first priority)
+    const activeDoc = input.activeDocumentKey
+      ? input.documents.find((d) => d.key === input.activeDocumentKey)
+      : input.documents[0];
+
+    if (activeDoc) {
+      const activeTokens = this.tokensOf(activeDoc);
+      for (const t of activeTokens) {
+        addToken(t);
+      }
     }
+
+    // 2. Workspace keywords (second priority: project-wide class/method names)
+    for (const t of workspaceKeywords) {
+      addToken(t);
+    }
+
+    // 3. Other open documents (third priority)
+    const currentKeys = new Set(input.documents.map((d) => d.key));
+    // Clean up cache for closed docs
+    for (const key of this.docFreqCache.keys()) {
+      if (!currentKeys.has(key)) {
+        this.docFreqCache.delete(key);
+      }
+    }
+
+    for (const doc of input.documents) {
+      if (activeDoc && doc.key === activeDoc.key) {
+        continue;
+      }
+      const otherTokens = this.tokensOf(doc);
+      for (const t of otherTokens) {
+        addToken(t);
+      }
+    }
+
+    // 4. File stems (last priority)
+    const fileStems = input.fileNames
+      .map((name) => stemOfFileName(name))
+      .filter((stem): stem is string => stem !== null);
+    for (const t of fileStems) {
+      addToken(t);
+    }
+
     return merged;
   }
 
@@ -64,41 +127,7 @@ export class VocabularyModel {
     return keywords.length === 0 ? '' : `context vocabulary: ${keywords.join(', ')}`;
   }
 
-  /** Cached by document key (URI+version); merging frequencies across all open documents. */
-  private tokensAcrossDocuments(input: EditorContextInput): string[] {
-    const currentKeys = new Set(input.documents.map((d) => d.key));
-    // Clean up closed/changed documents
-    for (const key of this.docFreqCache.keys()) {
-      if (!currentKeys.has(key)) {
-        this.docFreqCache.delete(key);
-      }
-    }
 
-    const globalFreq = new Map<string, number>();
-
-    for (const doc of input.documents) {
-      let freq = this.docFreqCache.get(doc.key);
-      if (freq === undefined) {
-        freq = new Map<string, number>();
-        for (const match of doc.text.matchAll(IDENTIFIER_PATTERN)) {
-          const token = match[0];
-          if (STOP_WORDS.has(token.toLowerCase())) {
-            continue;
-          }
-          freq.set(token, (freq.get(token) ?? 0) + 1);
-        }
-        this.docFreqCache.set(doc.key, freq);
-      }
-      for (const [token, count] of freq.entries()) {
-        globalFreq.set(token, (globalFreq.get(token) ?? 0) + count);
-      }
-    }
-
-    return [...globalFreq.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, TOP_TOKEN_COUNT)
-      .map(([token]) => token);
-  }
 }
 
 /** e.g. `AudioRecorderService.test.ts` → `AudioRecorderService`; drops stems that are all-numeric or too short. */

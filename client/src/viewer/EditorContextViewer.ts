@@ -15,6 +15,7 @@ import { type DocumentContext } from '../models/VocabularyModel';
 export interface EditorSnapshot {
   documents: DocumentContext[];
   fileNames: string[];
+  activeDocumentKey?: string;
 }
 
 export class EditorContextViewer implements vscode.Disposable {
@@ -52,7 +53,11 @@ export class EditorContextViewer implements vscode.Disposable {
         key: `${doc.uri.toString()}@${doc.version}`,
       }));
 
-    return { documents, fileNames };
+    const activeDocumentKey = this.lastRealEditor
+      ? `${this.lastRealEditor.document.uri.toString()}@${this.lastRealEditor.document.version}`
+      : undefined;
+
+    return { documents, fileNames, activeDocumentKey };
   }
 
   dispose(): void {
