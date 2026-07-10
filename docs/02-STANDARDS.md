@@ -23,14 +23,14 @@
 
 - 词汇提取 regex:`/[a-zA-Z_][a-zA-Z0-9_]{3,19}/g`;词频降序 **top 40**;停用词 = 常见语言关键字小表;合并最近 **15** 个工作区文件名词干(去扩展名)。
 - hint/`initial_prompt`:中文引导句 + 逗号拼接词表,服务端截断至 **896 字符**(Whisper prompt token 上限安全值)。
-- 音频:MP3、16kHz、单声道、~32kbps;录音上限 `vibe.maxRecordSeconds` 默认 **25s**;Worker 拒收 >**8MB** base64(413)。
-- ffmpeg 探测顺序(权威):`vibe.ffmpegPath` → PATH → 平台常见安装路径(macOS:`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`;Windows:winget Links、chocolatey bin、scoop shims、`C:\ffmpeg\bin`;Linux:`/usr/bin`、`/usr/local/bin`、`/snap/bin`)。只缓存成功结果(装完重试须能生效)。
+- 音频:MP3、16kHz、单声道、~32kbps;录音上限 `vibefox.maxRecordSeconds` 默认 **25s**;Worker 拒收 >**8MB** base64(413)。
+- ffmpeg 探测顺序(权威):`vibefox.ffmpegPath` → PATH → 平台常见安装路径(macOS:`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`;Windows:winget Links、chocolatey bin、scoop shims、`C:\ffmpeg\bin`;Linux:`/usr/bin`、`/usr/local/bin`、`/snap/bin`)。只缓存成功结果(装完重试须能生效)。
 - Whisper 调用:`@cf/openai/whisper-large-v3-turbo`,`task:"transcribe"`,`language` 默认 `"zh"`(显式传,绕过自动检测),`vad_filter:true`。
 - 客户端 HTTP 超时 **60s**(AbortController);错误映射:401/403→重设 key,413→录音过长,5xx→服务端错误。
 
 ## 4. 跨切面硬规则
 
-- **命名**:类=PascalCase 单一职责名(`XxxViewer`/`XxxService`/`XxxModel`/`XxxController`);配置键=`vibe.*` camelCase;命令=`vibe.verbNoun`。
+- **命名**:类=PascalCase 单一职责名(`XxxViewer`/`XxxService`/`XxxModel`/`XxxController`);配置键=`vibefox.*` camelCase;命令=`vibefox.verbNoun`。
 - **密钥**:客户端只进 `SecretStorage`;服务端只进 KV/secret(见 CLAUDE.md 红线 2)。
 - **错误面向用户**:一律经 Controller 用 `showErrorMessage` 给**可操作**文案(ffmpeg 缺失 →「一键安装」按钮直接在内置终端执行安装命令,不让用户抄命令);Service 层抛 typed Error 不弹 UI。
 - **Disposable**:所有注册(命令/监听/状态栏)入 `context.subscriptions`;类实现 `vscode.Disposable`。
