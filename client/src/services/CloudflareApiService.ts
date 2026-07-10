@@ -169,10 +169,13 @@ export class CloudflareApiService {
       ? endpoint.replace(/\/+$/, '')
       : 'https://dashscope.aliyuncs.com';
 
-    // If endpoint has compatible-mode/v1, extract base Maas domain
+    // Normalize base domain by stripping trailing API path suffixes
     let baseDomain = baseUrl;
     if (baseDomain.includes('/compatible-mode/v1')) {
       baseDomain = baseDomain.replace('/compatible-mode/v1', '');
+    }
+    if (baseDomain.endsWith('/api/v1')) {
+      baseDomain = baseDomain.substring(0, baseDomain.length - 7);
     }
 
     const submitUrl = `${baseDomain}/api/v1/services/audio/asr/transcription`;
