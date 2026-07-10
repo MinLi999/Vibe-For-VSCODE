@@ -167,9 +167,114 @@ export class CloudflareApiService {
   async transcribeAliyun(endpoint: string, apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
     const baseUrl = endpoint.trim().length > 0
       ? endpoint.replace(/\/+$/, '')
-      : 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-    const url = `${baseUrl}/audio/transcriptions`;
-    return this.transcribeOpenAICompatible(url, apiKey, 'paraformer-v2', audioBase64, language, keywords);
+      : 'https://dashscope.aliyuncs.com';
+
+    // If endpoint has compatible-mode/v1, extract base Maas domain
+    let baseDomain = baseUrl;
+    if (baseDomain.includes('/compatible-mode/v1')) {
+      baseDomain = baseDomain.replace('/compatible-mode/v1', '');
+    }
+
+    const submitUrl = `${baseDomain}/api/v1/services/audio/asr/transcription`;
+
+    // 1. Submit asynchronous transcription task
+    const submitResponse = await fetch(submitUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'X-DashScope-Async': 'enable',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'paraformer-v2',
+        input: {
+          file_urls: [`data:audio/mp3;base64,${audioBase64}`],
+        },
+        parameters: {
+          language_hints: [language || 'zh'],
+        },
+      }),
+    });
+
+    if (!submitResponse.ok) {
+      let errDetail = `HTTP ${submitResponse.status}`;
+      try {
+        const errBody = (await submitResponse.json()) as { error?: { message?: string }; message?: string };
+        if (errBody?.message) {
+          errDetail = errBody.message;
+        } else if (errBody?.error?.message) {
+          errDetail = errBody.error.message;
+        }
+      } catch {}
+      throw new ApiError('server', `提交转写任务失败: ${errDetail}`, submitResponse.status);
+    }
+
+    const submitBody = (await submitResponse.json()) as { output?: { task_id?: string } };
+    const taskId = submitBody?.output?.task_id;
+    if (!taskId) {
+      throw new ApiError('server', '未获取到转写任务 ID');
+    }
+
+    // 2. Poll task status until finished (SUCCEEDED or FAILED)
+    const taskUrl = `${baseDomain}/api/v1/tasks/${taskId}`;
+    let status = 'PENDING';
+    let results: { transcription_url?: string }[] = [];
+    const maxPollAttempts = 40; // 40 attempts * 150ms = 6 seconds max
+    
+    for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const pollResponse = await fetch(taskUrl, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+      });
+
+      if (!pollResponse.ok) {
+        throw new ApiError('server', `轮询任务状态失败: HTTP ${pollResponse.status}`, pollResponse.status);
+      }
+
+      const pollBody = (await pollResponse.json()) as {
+        output?: { task_status?: string; results?: { transcription_url?: string }[]; message?: string };
+      };
+      
+      status = pollBody?.output?.task_status || 'PENDING';
+      if (status === 'SUCCEEDED') {
+        results = pollBody?.output?.results || [];
+        break;
+      } else if (status === 'FAILED') {
+        throw new ApiError('server', `转写任务失败: ${pollBody?.output?.message || '未知错误'}`);
+      }
+    }
+
+    if (status !== 'SUCCEEDED') {
+      throw new ApiError('timeout', '转写任务处理超时，请重试');
+    }
+
+    const transcriptionUrl = results?.[0]?.transcription_url;
+    if (!transcriptionUrl) {
+      throw new ApiError('server', '未获取到转写结果 URL');
+    }
+
+    // 3. Fetch transcription JSON from transcription_url
+    const resultResponse = await fetch(transcriptionUrl);
+    if (!resultResponse.ok) {
+      throw new ApiError('server', `获取转写文件失败: HTTP ${resultResponse.status}`);
+    }
+
+    const resultBody = (await resultResponse.json()) as {
+      transcription?: {
+        sentences?: { text?: string }[];
+      };
+    };
+
+    const sentences = resultBody?.transcription?.sentences || [];
+    const text = sentences
+      .map((s) => s.text || '')
+      .filter((t) => t.length > 0)
+      .join(' ');
+
+    return text.trim();
   }
 
   async transcribeCustom(endpoint: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
