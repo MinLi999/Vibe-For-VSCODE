@@ -164,6 +164,76 @@ export class CloudflareApiService {
     }
   }
 
+  async transcribeAliyun(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+    const url = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const promptText = keywords.length > 0
+        ? `请将这段语音直接转写为文字，不要带有任何解释或多余的提示词。涉及的专业英文词汇偏置如下：${keywords.join(', ')}。`
+        : '请将这段语音直接转写为文字，不要带有任何解释或多余的提示词。';
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'qwen-audio-turbo', // 2026最新一代旗舰多模态大模型
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_audio',
+                  input_audio: {
+                    data: `data:audio/mp3;base64,${audioBase64}`,
+                    format: 'mp3',
+                  },
+                },
+                {
+                  type: 'text',
+                  text: promptText,
+                },
+              ],
+            },
+          ],
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let errDetail = `HTTP ${response.status}`;
+        try {
+          const errBody = (await response.json()) as { error?: { message?: string } };
+          if (errBody?.error?.message) {
+            errDetail = errBody.error.message;
+          }
+        } catch {}
+        throw new ApiError('server', errDetail, response.status);
+      }
+
+      const body = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+      const text = body?.choices?.[0]?.message?.content;
+      if (typeof text !== 'string') {
+        throw new ApiError('server', '阿里云返回中缺少识别文本', response.status);
+      }
+      return text.trim();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ApiError('timeout', `转写请求超时(${REQUEST_TIMEOUT_MS / 1000}s)`);
+      }
+      throw new ApiError('network', `请求失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async transcribeCustom(endpoint: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
     const url = endpoint.replace(/\/+$/, '');
     const controller = new AbortController();

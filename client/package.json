@@ -53,12 +53,13 @@
       "properties": {
         "vibe.apiProvider": {
           "type": "string",
-          "enum": ["cloudflare", "groq", "openai", "custom"],
+          "enum": ["cloudflare", "groq", "openai", "aliyun", "custom"],
           "default": "cloudflare",
           "enumDescriptions": [
             "Use Cloudflare Workers AI (default free/hosted backend)",
             "Use Groq Whisper API (requires Groq API Key)",
             "Use OpenAI Whisper API (requires OpenAI API Key)",
+            "Use Alibaba Cloud DashScope Qwen-Audio API (requires Aliyun API Key)",
             "Use a custom HTTP POST endpoint (e.g. local SenseVoice or custom proxy)"
           ],
           "markdownDescription": "Choose the API provider to use for speech-to-text transcription."
