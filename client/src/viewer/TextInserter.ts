@@ -79,22 +79,27 @@ export class TextInserter {
     // Always copy to clipboard as a fallback/safety net first, in case it's a custom webview chat
     await this.intoClipboard(text);
 
-    const isCursor = vscode.env.appName.toLowerCase().includes('cursor');
-    if (isCursor) {
-      // Try to open/focus Cursor Composer or Chat panels sequentially
-      const cursorCommands = [
-        'composer.openOrFocus',
-        'aichat.newfollowupaction',
-        'composerMode.agent',
-      ];
-      for (const cmd of cursorCommands) {
-        try {
-          await vscode.commands.executeCommand(cmd);
-        } catch {
-          // Ignore if command is not registered/fails
-        }
+    // Try executing all known chat panel focus commands sequentially
+    const chatCommands = [
+      'cloudcode.gemini.chatView.focus',
+      'workbench.view.extension.geminiChat',
+      'composer.openOrFocus',
+      'aichat.newfollowupaction',
+      'composerMode.agent',
+    ];
+
+    let focused = false;
+    for (const cmd of chatCommands) {
+      try {
+        await vscode.commands.executeCommand(cmd);
+        focused = true;
+      } catch {
+        // Ignore and try next
       }
-    } else {
+    }
+
+    // Fall back to built-in Copilot Chat if none of the custom ones succeeded
+    if (!focused) {
       try {
         await vscode.commands.executeCommand('workbench.action.chat.open', {
           query: text,
