@@ -633,7 +633,7 @@ export class VibeController implements vscode.Disposable {
   private applyDeveloperModeRules(text: string): string {
     let result = text;
 
-    // 1. File extensions: "dot ts" / "点 ts" -> ".ts" (case-insensitive, optional spaces)
+    // 1. File extensions: "dot ts" / "dian ts" -> ".ts" (case-insensitive, optional spaces)
     result = result.replace(/\b(?:dot|点|\\.)\s*(ts|js|json|py|css|html|md|tsx|jsx|sh|yaml|yml|rs|go|c|cpp|h|txt|log)\b/gi, (match, ext) => {
       return `.${ext.toLowerCase()}`;
     });
@@ -661,7 +661,7 @@ export class VibeController implements vscode.Disposable {
     };
 
     // 2. Case conversions
-    // Matches patterns like "驼峰命名 auth middleware", "camel case auth middleware", "小驼峰 auth middleware"
+    // Matches patterns like "camel case auth middleware" or Chinese spoken casing prefixes
     result = result.replace(/(?:camel\s*case|驼峰(?:命名)?|小驼峰)\s*([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*)/gi, (match, target) => {
       return toCamelCase(target);
     });
