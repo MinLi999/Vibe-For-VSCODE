@@ -27,6 +27,8 @@ interface VibeConfig {
   vadEnabled: boolean;
   vadSilenceMs: number;
   vadMinDurationMs: number;
+  apiProvider: string;
+  customEndpoint: string;
 }
 
 export class VibeController implements vscode.Disposable {
@@ -58,6 +60,8 @@ export class VibeController implements vscode.Disposable {
       vscode.commands.registerCommand('vibe.cancelRecording', () => this.cancel()),
       vscode.commands.registerCommand('vibe.setLicenseKey', () => this.promptForLicenseKey()),
       vscode.commands.registerCommand('vibe.clearLicenseKey', () => this.clearLicenseKey()),
+      vscode.commands.registerCommand('vibe.setApiKey', () => this.promptForApiKey()),
+      vscode.commands.registerCommand('vibe.clearApiKey', () => this.clearApiKey()),
     );
   }
 
@@ -170,11 +174,6 @@ export class VibeController implements vscode.Disposable {
 
     try {
       const config = this.readConfig();
-      const licenseKey = await this.secrets.get(SECRET_KEY);
-      if (licenseKey === undefined) {
-        throw new ApiError('unauthorized', 'License key 已被清除,请重新设置');
-      }
-
       let audioBase64 = '';
       if (config.vadEnabled && finalMp3 !== null) {
         audioBase64 = finalMp3.toString('base64');
@@ -192,15 +191,11 @@ export class VibeController implements vscode.Disposable {
       }
 
       const keywords = config.contextHint ? await this.collectKeywords() : [];
-      const result = await this.api.transcribe(config.endpoint, licenseKey, {
-        audio: audioBase64,
-        language: config.language,
-        keywords,
-      });
+      const text = await this.transcribeWithProvider(config, audioBase64, keywords);
 
-      const outcome = await this.inserter.insert(result.text, config.insertTarget);
-      this.audioState.completeWithText(result.text);
-      this.statusBar.flashResult('ok', `已插入 ${result.text.length} 字`);
+      const outcome = await this.inserter.insert(text, config.insertTarget);
+      this.audioState.completeWithText(text);
+      this.statusBar.flashResult('ok', `已插入 ${text.length} 字`);
       if (outcome.via === 'clipboard' || outcome.via === 'chat') {
         void vscode.window.showInformationMessage('Vibe:转写结果已复制到剪贴板,如果聊天框未自动填入,可直接粘贴(⌘V / Ctrl+V)');
       }
@@ -228,23 +223,51 @@ export class VibeController implements vscode.Disposable {
 
   private async handleVadSegment(segmentMp3: Buffer): Promise<void> {
     const config = this.readConfig();
-    const licenseKey = await this.secrets.get(SECRET_KEY);
-    if (licenseKey === undefined) {
-      return;
-    }
-
     try {
       const keywords = config.contextHint ? await this.collectKeywords() : [];
-      const result = await this.api.transcribe(config.endpoint, licenseKey, {
-        audio: segmentMp3.toString('base64'),
-        language: config.language,
-        keywords,
-      });
-
-      await this.inserter.insert(result.text, config.insertTarget);
+      const text = await this.transcribeWithProvider(config, segmentMp3.toString('base64'), keywords);
+      await this.inserter.insert(text, config.insertTarget);
     } catch {
       // Ignore background transcription slice errors to prevent interrupting recording flow
     }
+  }
+
+  private async transcribeWithProvider(
+    config: VibeConfig,
+    audioBase64: string,
+    keywords: string[]
+  ): Promise<string> {
+    const provider = config.apiProvider;
+    if (provider === 'cloudflare') {
+      const licenseKey = await this.secrets.get(SECRET_KEY);
+      if (licenseKey === undefined) {
+        throw new ApiError('unauthorized', 'License key 已被清除,请重新设置');
+      }
+      const result = await this.api.transcribe(config.endpoint, licenseKey, {
+        audio: audioBase64,
+        language: config.language,
+        keywords,
+      });
+      return result.text;
+    } else if (provider === 'groq') {
+      const apiKey = await this.secrets.get('vibe.groqKey');
+      if (apiKey === undefined) {
+        throw new ApiError('unauthorized', 'Groq API Key 未设置，请运行「Vibe: Set API Key」进行设置');
+      }
+      return this.api.transcribeGroq(apiKey, audioBase64, config.language, keywords);
+    } else if (provider === 'openai') {
+      const apiKey = await this.secrets.get('vibe.openaiKey');
+      if (apiKey === undefined) {
+        throw new ApiError('unauthorized', 'OpenAI API Key 未设置，请运行「Vibe: Set API Key」进行设置');
+      }
+      return this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords);
+    } else if (provider === 'custom') {
+      if (!config.customEndpoint) {
+        throw new Error('自定义服务地址 (vibe.customEndpoint) 未配置');
+      }
+      return this.api.transcribeCustom(config.customEndpoint, audioBase64, config.language, keywords);
+    }
+    throw new Error(`不支持的 API Provider: ${provider}`);
   }
 
   /**
@@ -309,6 +332,43 @@ export class VibeController implements vscode.Disposable {
     void vscode.window.showInformationMessage('Vibe:License key 已清除');
   }
 
+  private async promptForApiKey(): Promise<void> {
+    const config = this.readConfig();
+    const provider = config.apiProvider;
+    if (provider !== 'groq' && provider !== 'openai') {
+      void vscode.window.showWarningMessage(`当前 API Provider 为「${provider}」，无需配置 API Key`);
+      return;
+    }
+
+    const secretKeyName = provider === 'groq' ? 'vibe.groqKey' : 'vibe.openaiKey';
+    const providerTitle = provider === 'groq' ? 'Groq' : 'OpenAI';
+
+    const input = await vscode.window.showInputBox({
+      title: `Vibe Set ${providerTitle} API Key`,
+      prompt: `输入 ${providerTitle} API 密钥(仅存于 SecretStorage,不进设置文件)`,
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim().length === 0 ? '密钥不能为空' : undefined),
+    });
+
+    if (input === undefined) {
+      return;
+    }
+    const trimmed = input.trim();
+    await this.secrets.store(secretKeyName, trimmed);
+    void vscode.window.showInformationMessage(`Vibe:${providerTitle} API Key 已保存`);
+  }
+
+  private async clearApiKey(): Promise<void> {
+    const config = this.readConfig();
+    const provider = config.apiProvider;
+    const secretKeyName = provider === 'groq' ? 'vibe.groqKey' : 'vibe.openaiKey';
+    const providerTitle = provider === 'groq' ? 'Groq' : 'OpenAI';
+
+    await this.secrets.delete(secretKeyName);
+    void vscode.window.showInformationMessage(`Vibe:${providerTitle} API Key 已清除`);
+  }
+
   // ── Error fallback ────────────────────────────────────────
 
   private async reportTranscribeError(err: unknown): Promise<void> {
@@ -356,6 +416,8 @@ export class VibeController implements vscode.Disposable {
       vadEnabled: cfg.get<boolean>('vadEnabled', true),
       vadSilenceMs: cfg.get<number>('vadSilenceMs', 1200),
       vadMinDurationMs: cfg.get<number>('vadMinDurationMs', 3000),
+      apiProvider: cfg.get<string>('apiProvider', 'cloudflare'),
+      customEndpoint: cfg.get<string>('customEndpoint', '').trim(),
     };
   }
 
