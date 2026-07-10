@@ -78,19 +78,39 @@ export class TextInserter {
   private async intoChat(text: string): Promise<InsertOutcome> {
     // Always copy to clipboard as a fallback/safety net first, in case it's a custom webview chat
     await this.intoClipboard(text);
-    try {
-      await vscode.commands.executeCommand('workbench.action.chat.open', {
-        query: text,
-        isPartialQuery: true,
-      });
-    } catch (err) {
-      // Ignore built-in Copilot Chat open failure
+
+    const isCursor = vscode.env.appName.toLowerCase().includes('cursor');
+    if (isCursor) {
+      // Try to open/focus Cursor Composer or Chat panels sequentially
+      const cursorCommands = [
+        'composer.openOrFocus',
+        'aichat.newfollowupaction',
+        'composerMode.agent',
+      ];
+      for (const cmd of cursorCommands) {
+        try {
+          await vscode.commands.executeCommand(cmd);
+        } catch {
+          // Ignore if command is not registered/fails
+        }
+      }
+    } else {
+      try {
+        await vscode.commands.executeCommand('workbench.action.chat.open', {
+          query: text,
+          isPartialQuery: true,
+        });
+      } catch (err) {
+        // Ignore built-in Copilot Chat open failure
+      }
     }
 
     // On macOS, try to trigger a system-level paste via AppleScript so it enters any active focused webview input (best effort)
     if (process.platform === 'darwin') {
       try {
         const { exec } = require('child_process');
+        // Give 150ms for the chat/composer pane to gain focus before triggering paste
+        await new Promise((resolve) => setTimeout(resolve, 150));
         exec(`osascript -e 'tell application "System Events" to keystroke "v" using {command down}'`, (error: any) => {
           // Silent catch to prevent crash if Assistive Access (Accessibility) permissions are missing in macOS Settings
         });

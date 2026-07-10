@@ -12,13 +12,13 @@ import { EditorContextViewer } from './viewer/EditorContextViewer';
 import { AudioRecorderService } from './services/AudioRecorderService';
 import { CloudflareApiService } from './services/CloudflareApiService';
 import { WorkspaceContextService } from './services/WorkspaceContextService';
-import { VibeController } from './controllers/VibeController';
+import { VibeController, getActiveKeybinding } from './controllers/VibeController';
 
 export function activate(context: vscode.ExtensionContext): void {
   const audioState = new AudioState();
   const vocabulary = new VocabularyModel();
 
-  const statusBar = new StatusBarViewer();
+  const statusBar = new StatusBarViewer(() => getActiveKeybinding());
   const inserter = new TextInserter();
   const editorContext = new EditorContextViewer();
   const workspaceContext = new WorkspaceContextService();

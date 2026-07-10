@@ -45,7 +45,7 @@ export function buildInitialPrompt(keywords: string[]): string | undefined {
     return undefined;
   }
 
-  const prompt = `中文录音，口齿清晰，标点符号齐全。涉及标识符：${cleaned.join(', ')}。`;
+  const prompt = `VibeFox, TypeScript, VS Code. 好的，我开始写代码。涉及的代码词汇和变量名有：${cleaned.join(', ')}。另外，在语气停顿处请加上标点符号（如逗号、句号、问号）。`;
   return prompt.length > MAX_INITIAL_PROMPT_CHARS ? prompt.slice(0, MAX_INITIAL_PROMPT_CHARS) : prompt;
 }
 
