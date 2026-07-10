@@ -261,6 +261,12 @@ export class VibeController implements vscode.Disposable {
         throw new ApiError('unauthorized', 'OpenAI API Key 未设置，请运行「Vibe: Set API Key」进行设置');
       }
       return this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords);
+    } else if (provider === 'aliyun') {
+      const apiKey = await this.secrets.get('vibe.aliyunKey');
+      if (apiKey === undefined) {
+        throw new ApiError('unauthorized', '阿里云 API Key 未设置，请运行「Vibe: Set API Key」进行设置');
+      }
+      return this.api.transcribeAliyun(apiKey, audioBase64, config.language, keywords);
     } else if (provider === 'custom') {
       if (!config.customEndpoint) {
         throw new Error('自定义服务地址 (vibe.customEndpoint) 未配置');
@@ -335,13 +341,20 @@ export class VibeController implements vscode.Disposable {
   private async promptForApiKey(): Promise<void> {
     const config = this.readConfig();
     const provider = config.apiProvider;
-    if (provider !== 'groq' && provider !== 'openai') {
+    if (provider !== 'groq' && provider !== 'openai' && provider !== 'aliyun') {
       void vscode.window.showWarningMessage(`当前 API Provider 为「${provider}」，无需配置 API Key`);
       return;
     }
 
-    const secretKeyName = provider === 'groq' ? 'vibe.groqKey' : 'vibe.openaiKey';
-    const providerTitle = provider === 'groq' ? 'Groq' : 'OpenAI';
+    const secretKeyName =
+      provider === 'groq'
+        ? 'vibe.groqKey'
+        : provider === 'openai'
+        ? 'vibe.openaiKey'
+        : 'vibe.aliyunKey';
+
+    const providerTitle =
+      provider === 'groq' ? 'Groq' : provider === 'openai' ? 'OpenAI' : '阿里云 DashScope';
 
     const input = await vscode.window.showInputBox({
       title: `Vibe Set ${providerTitle} API Key`,
@@ -362,8 +375,19 @@ export class VibeController implements vscode.Disposable {
   private async clearApiKey(): Promise<void> {
     const config = this.readConfig();
     const provider = config.apiProvider;
-    const secretKeyName = provider === 'groq' ? 'vibe.groqKey' : 'vibe.openaiKey';
-    const providerTitle = provider === 'groq' ? 'Groq' : 'OpenAI';
+    if (provider !== 'groq' && provider !== 'openai' && provider !== 'aliyun') {
+      return;
+    }
+
+    const secretKeyName =
+      provider === 'groq'
+        ? 'vibe.groqKey'
+        : provider === 'openai'
+        ? 'vibe.openaiKey'
+        : 'vibe.aliyunKey';
+
+    const providerTitle =
+      provider === 'groq' ? 'Groq' : provider === 'openai' ? 'OpenAI' : '阿里云 DashScope';
 
     await this.secrets.delete(secretKeyName);
     void vscode.window.showInformationMessage(`Vibe:${providerTitle} API Key 已清除`);
