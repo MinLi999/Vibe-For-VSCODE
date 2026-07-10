@@ -14,7 +14,7 @@ export class StatusBarViewer implements vscode.Disposable {
   private waveFrame = 0;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor() {
+  constructor(private readonly shortcutProvider: () => string) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
     this.item.command = 'vibefox.toggleRecording';
     this.showIdle();
@@ -25,7 +25,8 @@ export class StatusBarViewer implements vscode.Disposable {
   showIdle(): void {
     this.stopTimers();
     this.item.text = '$(mic) VibeFox';
-    this.item.tooltip = 'VibeFox:点击或按 Ctrl+Shift+Space 开始语音输入';
+    const shortcut = this.shortcutProvider();
+    this.item.tooltip = `VibeFox:点击或按 ${shortcut} 开始语音输入`;
     this.item.backgroundColor = undefined;
   }
 

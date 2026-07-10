@@ -123,8 +123,8 @@ export class CloudflareApiService {
       formData.append('model', model);
       formData.append('language', language);
       if (keywords.length > 0) {
-        const prefix = '涉及的英文专业词汇如下：';
-        const suffix = '。';
+        const prefix = 'VibeFox, TypeScript, VS Code. 好的，我开始写代码。涉及的代码词汇和变量名有：';
+        const suffix = '。另外，在语气停顿处请加上标点符号（如逗号、句号、问号）。';
         const maxLen = 800;
         let promptVal = prefix;
         for (let i = 0; i < keywords.length; i++) {

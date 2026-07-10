@@ -4,6 +4,9 @@
  * (SecretStorage), timeout auto-stop, error fallback (all user-facing actionable copy is assembled here).
  */
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 import { AudioState } from '../models/AudioState';
 import { VocabularyModel } from '../models/VocabularyModel';
@@ -13,6 +16,50 @@ import { EditorContextViewer } from '../viewer/EditorContextViewer';
 import { AudioRecorderService, FfmpegNotFoundError, RecorderStartError } from '../services/AudioRecorderService';
 import { ApiError, CloudflareApiService } from '../services/CloudflareApiService';
 import { WorkspaceContextService } from '../services/WorkspaceContextService';
+
+export function getActiveKeybinding(): string {
+  const defaultKey = 'Ctrl+Shift+Space';
+  try {
+    let appDir = 'Code';
+    const appName = vscode.env.appName.toLowerCase();
+    if (appName.includes('cursor')) {
+      appDir = 'Cursor';
+    } else if (appName.includes('insiders')) {
+      appDir = 'Code - Insiders';
+    } else if (appName.includes('codium')) {
+      appDir = 'VSCodium';
+    }
+
+    let userFolder = '';
+    const home = os.homedir();
+    if (process.platform === 'darwin') {
+      userFolder = path.join(home, 'Library', 'Application Support', appDir, 'User');
+    } else if (process.platform === 'win32') {
+      const appdata = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+      userFolder = path.join(appdata, appDir, 'User');
+    } else {
+      userFolder = path.join(home, '.config', appDir, 'User');
+    }
+
+    const keybindingsPath = path.join(userFolder, 'keybindings.json');
+    if (!fs.existsSync(keybindingsPath)) {
+      return defaultKey;
+    }
+
+    const content = fs.readFileSync(keybindingsPath, 'utf8');
+    const cleanContent = content.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
+    const bindings = JSON.parse(cleanContent);
+    if (Array.isArray(bindings)) {
+      const match = bindings.find(b => b.command === 'vibefox.toggleRecording');
+      if (match && typeof match.key === 'string') {
+        return match.key.split('+').map(part => part.trim().charAt(0).toUpperCase() + part.trim().slice(1)).join('+');
+      }
+    }
+  } catch (err) {
+    // Silently fall back to default
+  }
+  return defaultKey;
+}
 
 const SECRET_KEY = 'vibefox.licenseKey';
 
@@ -322,7 +369,7 @@ export class VibeController implements vscode.Disposable {
       terminal.show();
       terminal.sendText(installCommand, true);
       void vscode.window.showInformationMessage(
-        `VibeFox:正在终端执行「${installCommand}」,完成后再按 Ctrl+Shift+Space 即可录音`,
+        `VibeFox:正在终端执行「${installCommand}」,完成后再按 ${getActiveKeybinding()} 即可录音`,
       );
     } else if (pick === '手动指定路径') {
       void vscode.commands.executeCommand('workbench.action.openSettings', 'vibefox.ffmpegPath');
