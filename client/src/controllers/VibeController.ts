@@ -258,7 +258,7 @@ export class VibeController implements vscode.Disposable {
       await this.inserter.insert(text, config.insertTarget);
     } catch (err) {
       console.error('[Vibe VAD Segment ASR Error]', err);
-      // Ignore background transcription slice errors to prevent interrupting recording flow
+      void vscode.window.showErrorMessage(`Vibe 语音转写错误: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
