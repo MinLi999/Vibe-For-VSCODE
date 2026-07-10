@@ -34,38 +34,47 @@ export class HttpError extends Error {
  * preceding context, biasing similar-sounding speech toward these code identifiers
  * (preventing variable names from being transcribed as phonetically-similar Chinese characters).
  */
-export function buildInitialPrompt(keywords: string[]): string | undefined {
+export function buildInitialPrompt(keywords: string[], previousTranscript?: string): string | undefined {
   const cleaned = keywords
     .filter((k): k is string => typeof k === 'string')
     .map((k) => k.trim())
     .filter((k) => k.length > 0 && k.length <= MAX_KEYWORD_LENGTH)
     .slice(0, MAX_KEYWORDS);
 
-  if (cleaned.length === 0) {
-    return undefined;
+  let promptVal = '';
+  if (previousTranscript && previousTranscript.trim().length > 0) {
+    promptVal += previousTranscript.trim().slice(-300) + '。';
   }
 
-  const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
-  const suffix = ' 这些。现在我要开始说一下修改思路。';
-  const maxBytes = 800;
-  let promptVal = prefix;
-  const encoder = new TextEncoder();
-  for (let i = 0; i < cleaned.length; i++) {
-    const sep = i === 0 ? '' : '、';
-    const part = sep + cleaned[i];
-    const candidate = promptVal + part + suffix;
-    if (encoder.encode(candidate).length > maxBytes) {
-      break;
+  if (cleaned.length > 0) {
+    const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
+    const suffix = ' 这些。现在我要开始说一下修改思路。';
+    const maxBytes = 800;
+    const encoder = new TextEncoder();
+    let keywordsPart = '';
+    for (let i = 0; i < cleaned.length; i++) {
+      const sep = i === 0 ? '' : '、';
+      const part = sep + cleaned[i];
+      if (encoder.encode(promptVal + prefix + keywordsPart + part + suffix).length > maxBytes) {
+        break;
+      }
+      keywordsPart += part;
     }
-    promptVal += part;
+    if (keywordsPart.length > 0) {
+      promptVal += prefix + keywordsPart + suffix;
+    }
   }
-  promptVal += suffix;
-  return promptVal;
+
+  return promptVal.length > 0 ? promptVal : undefined;
 }
 
 /** Validates and normalizes the request body; throws HttpError directly if invalid. */
 export function parseRequestBody(raw: unknown): Required<Pick<TranscribeRequestBody, 'audio' | 'language'>> & {
   keywords: string[];
+  previousTranscript?: string;
+  llmCorrect?: boolean;
+  llmPrompt?: string;
+  llmModel?: string;
 } {
   if (typeof raw !== 'object' || raw === null) {
     throw new HttpError(400, 'Request body must be a JSON object');
@@ -99,7 +108,12 @@ export function parseRequestBody(raw: unknown): Required<Pick<TranscribeRequestB
     keywords = body['keywords'].filter((k): k is string => typeof k === 'string');
   }
 
-  return { audio, language, keywords };
+  const previousTranscript = typeof body['previousTranscript'] === 'string' ? body['previousTranscript'] : undefined;
+  const llmCorrect = typeof body['llmCorrect'] === 'boolean' ? body['llmCorrect'] : undefined;
+  const llmPrompt = typeof body['llmPrompt'] === 'string' ? body['llmPrompt'] : undefined;
+  const llmModel = typeof body['llmModel'] === 'string' ? body['llmModel'] : undefined;
+
+  return { audio, language, keywords, previousTranscript, llmCorrect, llmPrompt, llmModel };
 }
 
 /** Core handler: validate → build prompt → call Whisper → build response. */
@@ -111,8 +125,8 @@ export async function handleTranscribe(request: Request, env: Env): Promise<Tran
     throw new HttpError(400, 'Request body must be valid JSON');
   }
 
-  const { audio, language, keywords } = parseRequestBody(raw);
-  const initialPrompt = buildInitialPrompt(keywords);
+  const { audio, language, keywords, previousTranscript, llmCorrect, llmPrompt, llmModel } = parseRequestBody(raw);
+  const initialPrompt = buildInitialPrompt(keywords, previousTranscript);
 
   const input: WhisperTurboInput = {
     audio,
@@ -133,9 +147,30 @@ export async function handleTranscribe(request: Request, env: Env): Promise<Tran
     input as unknown as Parameters<Ai['run']>[1],
   )) as WhisperTurboOutput;
 
-  const text = typeof result?.text === 'string' ? result.text.trim() : '';
+  let text = typeof result?.text === 'string' ? result.text.trim() : '';
   if (text.length === 0) {
     throw new HttpError(502, 'Transcription produced no text (silent audio or model failure)');
+  }
+
+  // Handle LLM post-processing correction on Cloudflare side
+  if (llmCorrect) {
+    const prompt = llmPrompt || '你是一个编程语音转文字后处理器。请修正转写文本中的错误标点，修复代码标识符拼写，去除填充词，不要改变原意。直接输出修改后的文本，不要带有任何解释或包裹符号。';
+    const model = llmModel || '@cf/meta/llama-3.1-8b-instruct';
+    try {
+      const llmResult = await env.AI.run(model as any, {
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: `参考代码词表：${keywords.join(', ')}\n\n待转写文本：${text}` }
+        ]
+      });
+      const responseText = (llmResult as any).response || (llmResult as any).text;
+      if (typeof responseText === 'string' && responseText.trim().length > 0) {
+        text = responseText.trim();
+      }
+    } catch (err) {
+      console.error('[Cloudflare Workers AI LLM Correction Error]', err);
+      // Fail gracefully: return the raw transcribed text on error instead of failing the request
+    }
   }
 
   return { text, duration_ms: Date.now() - started };

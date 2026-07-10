@@ -8,6 +8,10 @@ export interface TranscribeRequest {
   audio: string;
   language: string;
   keywords: string[];
+  previousTranscript?: string;
+  llmCorrect?: boolean;
+  llmPrompt?: string;
+  llmModel?: string;
 }
 
 export interface TranscribeResponse {
@@ -82,25 +86,27 @@ export class CloudflareApiService {
     return { text: body.text, duration_ms: body.duration_ms ?? 0 };
   }
 
-  async transcribeGroq(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+  async transcribeGroq(apiKey: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
     return this.transcribeOpenAICompatible(
       'https://api.groq.com/openai/v1/audio/transcriptions',
       apiKey,
       'whisper-large-v3',
       audioBase64,
       language,
-      keywords
+      keywords,
+      previousTranscript
     );
   }
 
-  async transcribeOpenAI(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+  async transcribeOpenAI(apiKey: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
     return this.transcribeOpenAICompatible(
       'https://api.openai.com/v1/audio/transcriptions',
       apiKey,
       'whisper-1',
       audioBase64,
       language,
-      keywords
+      keywords,
+      previousTranscript
     );
   }
 
@@ -110,7 +116,8 @@ export class CloudflareApiService {
     model: string,
     audioBase64: string,
     language: string,
-    keywords: string[]
+    keywords: string[],
+    previousTranscript?: string
   ): Promise<string> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -123,25 +130,33 @@ export class CloudflareApiService {
       formData.append('model', model);
       formData.append('language', language);
       formData.append('temperature', '0');
+
+      let promptVal = '';
+      if (previousTranscript && previousTranscript.trim().length > 0) {
+        promptVal += previousTranscript.trim().slice(-300) + '。';
+      }
+
       if (keywords.length > 0) {
         // Whisper treats prompt as "preceding transcript text", not instructions.
-        // A natural Chinese transcript style with code terms biases the model to
-        // continue in the same style — including punctuation and identifier spelling.
         const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
         const suffix = ' 这些。现在我要开始说一下修改思路。';
         const maxBytes = 800;
-        let promptVal = prefix;
         const encoder = new TextEncoder();
+        let keywordsPart = '';
         for (let i = 0; i < keywords.length; i++) {
           const sep = i === 0 ? '' : '、';
           const part = sep + keywords[i];
-          const candidate = promptVal + part + suffix;
-          if (encoder.encode(candidate).length > maxBytes) {
+          if (encoder.encode(promptVal + prefix + keywordsPart + part + suffix).length > maxBytes) {
             break;
           }
-          promptVal += part;
+          keywordsPart += part;
         }
-        promptVal += suffix;
+        if (keywordsPart.length > 0) {
+          promptVal += prefix + keywordsPart + suffix;
+        }
+      }
+
+      if (promptVal.length > 0) {
         formData.append('prompt', promptVal);
       }
 
@@ -183,7 +198,63 @@ export class CloudflareApiService {
     }
   }
 
-  async transcribeAliyun(endpoint: string, apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+  async llmCorrectOpenAICompatible(
+    baseUrl: string,
+    apiKey: string,
+    model: string,
+    text: string,
+    keywords: string[],
+    systemPrompt: string
+  ): Promise<string> {
+    const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `参考代码词表：${keywords.join(', ')}\n\n待转写文本：${text}` }
+          ],
+          temperature: 0,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let errDetail = `HTTP ${response.status}`;
+        try {
+          const errBody = await response.json() as any;
+          if (errBody?.error?.message) {
+            errDetail = errBody.error.message;
+          }
+        } catch {}
+        throw new Error(`LLM 校正请求失败: ${errDetail}`);
+      }
+
+      const body = await response.json() as any;
+      const resultText = body?.choices?.[0]?.message?.content;
+      if (typeof resultText !== 'string' || resultText.trim().length === 0) {
+        throw new Error('LLM 校正响应中没有包含有效文本');
+      }
+      return resultText.trim();
+    } catch (err) {
+      console.error('[Client LLM Correction Error]', err);
+      // Fallback: return raw text if correction fails
+      return text;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async transcribeAliyun(endpoint: string, apiKey: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
     const baseUrl = endpoint.trim().length > 0
       ? endpoint.replace(/\/+$/, '')
       : 'https://dashscope.aliyuncs.com';
@@ -343,7 +414,7 @@ export class CloudflareApiService {
     return text.trim();
   }
 
-  async transcribeCustom(endpoint: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
+  async transcribeCustom(endpoint: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
     const url = endpoint.replace(/\/+$/, '');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -358,6 +429,7 @@ export class CloudflareApiService {
           audio: audioBase64,
           language,
           keywords,
+          previousTranscript,
         }),
         signal: controller.signal,
       });

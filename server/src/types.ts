@@ -17,6 +17,10 @@ export interface TranscribeRequestBody {
   language?: string;
   /** Context vocabulary extracted by the client (variable names / filenames), injected into initial_prompt. */
   keywords?: string[];
+  previousTranscript?: string;
+  llmCorrect?: boolean;
+  llmPrompt?: string;
+  llmModel?: string;
 }
 
 /** Success response. */
