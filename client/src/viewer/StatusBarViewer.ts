@@ -16,7 +16,7 @@ export class StatusBarViewer implements vscode.Disposable {
 
   constructor() {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
-    this.item.command = 'vibe.toggleRecording';
+    this.item.command = 'vibefox.toggleRecording';
     this.showIdle();
     this.item.show();
   }
@@ -24,8 +24,8 @@ export class StatusBarViewer implements vscode.Disposable {
   /** Idle: static microphone. */
   showIdle(): void {
     this.stopTimers();
-    this.item.text = '$(mic) Vibe';
-    this.item.tooltip = 'Vibe Coding:点击或按 Ctrl+Shift+Space 开始语音输入';
+    this.item.text = '$(mic) VibeFox';
+    this.item.tooltip = 'VibeFox:点击或按 Ctrl+Shift+Space 开始语音输入';
     this.item.backgroundColor = undefined;
   }
 
