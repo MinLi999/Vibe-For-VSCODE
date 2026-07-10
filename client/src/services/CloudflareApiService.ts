@@ -266,13 +266,14 @@ export class CloudflareApiService {
     }
 
     const resultBody = (await resultResponse.json()) as {
-      transcription?: {
+      transcripts?: {
         sentences?: { text?: string }[];
-      };
+      }[];
     };
 
-    const sentences = resultBody?.transcription?.sentences || [];
-    const text = sentences
+    const transcripts = resultBody?.transcripts || [];
+    const text = transcripts
+      .flatMap((t) => t.sentences || [])
       .map((s) => s.text || '')
       .filter((t) => t.length > 0)
       .join(' ');
