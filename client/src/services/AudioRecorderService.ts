@@ -28,6 +28,7 @@ export interface RecorderOptions {
   vadEnabled?: boolean;
   vadSilenceMs?: number;
   vadMinDurationMs?: number;
+  vadSilenceThreshold?: number;
   onSegment?: (segmentMp3: Buffer) => void;
 }
 
@@ -104,6 +105,7 @@ export class AudioRecorderService {
   private totalPcmBytes = 0;
   private silentTimeMs = 0;
   private lastFfmpegPath = '';
+  private activeVadThreshold = 350;
 
   get isRecording(): boolean {
     return this.child !== null;
@@ -153,6 +155,7 @@ export class AudioRecorderService {
     this.pcmChunks = [];
     this.totalPcmBytes = 0;
     this.silentTimeMs = 0;
+    this.activeVadThreshold = options.vadSilenceThreshold ?? 350;
 
     const isVad = options.vadEnabled && options.onSegment;
 
@@ -267,7 +270,7 @@ export class AudioRecorderService {
       const average = sum / numSamples;
 
       // Discard silent trailing segments to avoid Whisper hallucinations on background noise/clicks
-      if (average < 350) {
+      if (average < this.activeVadThreshold) {
         return null;
       }
 
@@ -313,7 +316,7 @@ export class AudioRecorderService {
       const average = sum / numSamples;
       const durationMs = chunk.byteLength / 32;
 
-      const silenceThreshold = 350; // -35dB approx
+      const silenceThreshold = this.activeVadThreshold;
       if (average < silenceThreshold) {
         this.silentTimeMs += durationMs;
       } else {

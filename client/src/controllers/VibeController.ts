@@ -66,6 +66,7 @@ interface VibeConfig {
   vadEnabled: boolean;
   vadSilenceMs: number;
   vadMinDurationMs: number;
+  vadSilenceThreshold: number;
   apiProvider: string;
   customEndpoint: string;
   llmCorrectionEnabled: boolean;
@@ -213,6 +214,7 @@ export class VibeController implements vscode.Disposable {
           vadEnabled: config.vadEnabled,
           vadSilenceMs: config.vadSilenceMs,
           vadMinDurationMs: config.vadMinDurationMs,
+          vadSilenceThreshold: config.vadSilenceThreshold,
           onSegment: config.vadEnabled ? (segmentMp3) => void this.handleVadSegment(segmentMp3) : undefined,
         },
         (chunk) => this.audioState.appendChunk(chunk),
@@ -614,6 +616,7 @@ export class VibeController implements vscode.Disposable {
       vadEnabled: getWithFallback<boolean>('vadEnabled', true),
       vadSilenceMs: getWithFallback<number>('vadSilenceMs', 1200),
       vadMinDurationMs: getWithFallback<number>('vadMinDurationMs', 3000),
+      vadSilenceThreshold: getWithFallback<number>('vadSilenceThreshold', 350),
       apiProvider: getWithFallback<string>('apiProvider', 'cloudflare'),
       customEndpoint: getWithFallback<string>('customEndpoint', '').trim(),
       llmCorrectionEnabled: getWithFallback<boolean>('llmCorrectionEnabled', false),
