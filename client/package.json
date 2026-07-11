@@ -135,6 +135,13 @@
           "maximum": 15000,
           "markdownDescription": "Minimum audio segment duration in milliseconds before allowing a split."
         },
+        "vibefox.vadSilenceThreshold": {
+          "type": "number",
+          "default": 350,
+          "minimum": 50,
+          "maximum": 2000,
+          "markdownDescription": "Volume amplitude threshold (16-bit PCM absolute average) below which audio is treated as silent. Default 350. Lower it (e.g. 150-200) for quiet microphones."
+        },
         "vibefox.llmCorrectionEnabled": {
           "type": "boolean",
           "default": false,
