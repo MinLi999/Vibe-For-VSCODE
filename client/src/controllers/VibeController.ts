@@ -80,6 +80,7 @@ export class VibeController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private autoStopTimer: ReturnType<typeof setTimeout> | null = null;
   private lastVadTranscript: string = '';
+  private vadSegmentsTranscribedCount: number = 0;
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -200,6 +201,7 @@ export class VibeController implements vscode.Disposable {
 
     this.audioState.beginRecording();
     this.lastVadTranscript = '';
+    this.vadSegmentsTranscribedCount = 0;
     this.statusBar.showRecording(() => this.audioState.elapsedSeconds, config.maxRecordSeconds);
 
     try {
@@ -256,12 +258,14 @@ export class VibeController implements vscode.Disposable {
       } else {
         if (!this.audioState.hasAudio()) {
           // In VAD mode, it is normal that the final segment is empty if silence split occurred right before stop.
-          if (config.vadEnabled) {
+          if (config.vadEnabled && this.vadSegmentsTranscribedCount > 0) {
             this.audioState.reset();
             this.statusBar.showIdle();
             return;
           }
-          throw new RecorderStartError('没有录到音频(检查输入设备)');
+          throw new RecorderStartError(
+            `没有录到音频，请检查麦克风权限与输入设备${process.platform === 'darwin' ? '(macOS:系统设置 → 隐私与安全性 → 麦克风,允许 VS Code/Antigravity)' : ''}`
+          );
         }
         audioBase64 = this.audioState.toBase64();
       }
@@ -292,7 +296,7 @@ export class VibeController implements vscode.Disposable {
       this.audioState.reset();
       
       const config = this.readConfig();
-      if (config.vadEnabled) {
+      if (config.vadEnabled && this.vadSegmentsTranscribedCount > 0) {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (
           errMsg.includes('no text') ||
@@ -327,6 +331,7 @@ export class VibeController implements vscode.Disposable {
 
       if (finalText.trim().length > 0) {
         this.lastVadTranscript = (this.lastVadTranscript + ' ' + finalText).trim();
+        this.vadSegmentsTranscribedCount++;
         void vscode.window.showInformationMessage(`VibeFox 识别成功: [${finalText}]`);
         await this.inserter.insert(finalText, config.insertTarget);
       }

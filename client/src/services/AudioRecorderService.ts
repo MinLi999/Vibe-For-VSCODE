@@ -260,8 +260,8 @@ export class AudioRecorderService {
     // If we have remaining PCM (longer than 200ms), check if it is loud enough to contain speech (silence threshold = 350)
     if (remainingPcm && remainingPcm.byteLength > 3200 * 2) {
       let sum = 0;
-      const numSamples = remainingPcm.byteLength / 2;
-      for (let i = 0; i < remainingPcm.byteLength; i += 2) {
+      const numSamples = Math.floor(remainingPcm.byteLength / 2);
+      for (let i = 0; i < numSamples * 2; i += 2) {
         sum += Math.abs(remainingPcm.readInt16LE(i));
       }
       const average = sum / numSamples;
@@ -305,9 +305,9 @@ export class AudioRecorderService {
 
     // Calculate volume average for the chunk
     let sum = 0;
-    const numSamples = chunk.byteLength / 2;
+    const numSamples = Math.floor(chunk.byteLength / 2);
     if (numSamples > 0) {
-      for (let i = 0; i < chunk.byteLength; i += 2) {
+      for (let i = 0; i < numSamples * 2; i += 2) {
         sum += Math.abs(chunk.readInt16LE(i));
       }
       const average = sum / numSamples;
