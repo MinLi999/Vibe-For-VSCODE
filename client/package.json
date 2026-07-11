@@ -36,6 +36,10 @@
       {
         "command": "vibefox.clearApiKey",
         "title": "VibeFox: Clear API Key / 清除 API 密钥"
+      },
+      {
+        "command": "vibefox.diagnoseAudio",
+        "title": "VibeFox: Diagnose Audio Input / 诊断麦克风输入"
       }
     ],
     "keybindings": [

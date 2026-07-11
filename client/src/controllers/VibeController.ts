@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { spawn } from 'child_process';
 
 import { AudioState } from '../models/AudioState';
 import { VocabularyModel } from '../models/VocabularyModel';
@@ -110,6 +111,7 @@ export class VibeController implements vscode.Disposable {
       vscode.commands.registerCommand('vibefox.clearLicenseKey', () => this.clearLicenseKey()),
       vscode.commands.registerCommand('vibefox.setApiKey', () => this.promptForApiKey()),
       vscode.commands.registerCommand('vibefox.clearApiKey', () => this.clearApiKey()),
+      vscode.commands.registerCommand('vibefox.diagnoseAudio', () => this.diagnoseAudio()),
     );
   }
 
@@ -720,6 +722,89 @@ export class VibeController implements vscode.Disposable {
     }
 
     return result;
+  }
+
+  private async diagnoseAudio(): Promise<void> {
+    const config = this.readConfig();
+    const device = config.audioDevice || ':default';
+    const pick = await vscode.window.showInformationMessage(
+      `VibeFox 将开始 3 秒钟的麦克风测试，请准备好对着麦克风持续大声说话。是否开始？`,
+      '开始测试',
+      '取消'
+    );
+    if (pick !== '开始测试') {
+      return;
+    }
+    
+    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBarItem.text = '$(mic) 正在测试中，请持续大声说话...';
+    statusBarItem.show();
+    
+    try {
+      const binary = await this.recorder.ensureFfmpeg(config.ffmpegPath);
+      const args = [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-nostdin',
+        '-f', 'avfoundation',
+        '-i', device,
+        '-t', '3',
+        '-ac', '1',
+        '-ar', '16000',
+        '-f', 's16le',
+        'pipe:1'
+      ];
+      
+      const proc = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const chunks: Buffer[] = [];
+      proc.stdout.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+      
+      let stderr = '';
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      
+      await new Promise<void>((resolve, reject) => {
+        proc.on('close', (code) => {
+          if (code !== 0 && code !== 255) {
+            reject(new Error(stderr.trim() || `exit code ${code}`));
+          } else {
+            resolve();
+          }
+        });
+        proc.on('error', (err) => reject(err));
+      });
+      
+      const buffer = Buffer.concat(chunks);
+      if (buffer.length === 0) {
+        throw new Error('未捕获到任何音频数据');
+      }
+      
+      let sum = 0;
+      const numSamples = Math.floor(buffer.length / 2);
+      for (let i = 0; i < numSamples * 2; i += 2) {
+        sum += Math.abs(buffer.readInt16LE(i));
+      }
+      const average = Math.round(sum / numSamples);
+      
+      if (average < 100) {
+        await vscode.window.showWarningMessage(
+          `诊断结果：麦克风输入信号极弱（平均音量仅为 ${average}，近乎静音）。\n` +
+          `这通常是由于 macOS 权限缓存未更新或选错设备所致。请尝试使用 Cmd+Q 彻底退出并重启 IDE，或在终端中使用 'antigravity .' 命令启动 IDE。`
+        );
+      } else {
+        await vscode.window.showInformationMessage(
+          `诊断结果：麦克风工作正常！平均音量为 ${average}，已成功捕获音频数据！`
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await vscode.window.showErrorMessage(`诊断失败：${msg}`);
+    } finally {
+      statusBarItem.dispose();
+    }
   }
 
   dispose(): void {
