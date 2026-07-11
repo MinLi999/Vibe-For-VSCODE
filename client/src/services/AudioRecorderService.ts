@@ -182,7 +182,7 @@ export class AudioRecorderService {
           'pipe:1',
         ];
 
-    const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true });
     this.child = child;
 
     let stderrTail = '';
@@ -370,7 +370,7 @@ export class AudioRecorderService {
         '-f', 'mp3',
         'pipe:1',
       ];
-      const compressor = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const compressor = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       const mp3Chunks: Buffer[] = [];
       let stderr = '';
 
