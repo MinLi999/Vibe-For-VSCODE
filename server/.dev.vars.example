@@ -1,4 +1,12 @@
 # 本地开发变量样例。复制为 .dev.vars(已 gitignore)后填写。
-# 本项目当前无 secret 型环境变量;License Key 走 KV(wrangler kv key put)。
+# 线上密钥一律 `npx wrangler secret put <NAME>`,绝不进源码与配置(红线 2)。
+
+# 质量档双引擎(缺省时自动降级到 CF Whisper / llama 免费链路,便于无 key 开发):
+# 阿里云 DashScope key 按区域隔离、不能跨区使用,需两把独立 key(分别在新加坡/美国区 console 生成):
+# DASHSCOPE_API_KEY_APAC=sk-xxxxxxxx   # 阿里云国际版 Model Studio,新加坡区
+# DASHSCOPE_API_KEY_US=sk-xxxxxxxx     # 阿里云国际版 Model Studio,美国(Virginia)区,该区无免费额度
+# ANTHROPIC_API_KEY=sk-ant-xxxxxxxx    # Anthropic(Claude Haiku 4.5 改写)
+
 # 本地 dev 时给 KV 塞测试 key:
-#   npx wrangler kv key put --binding AUTH_KEYS "dev-test-key" '{"owner":"local"}' --local
+#   免费档: npx wrangler kv key put --binding AUTH_KEYS "dev-test-key" '{"owner":"local"}' --local
+#   质量档: npx wrangler kv key put --binding AUTH_KEYS "dev-pro-key" '{"owner":"local","plan":"pro"}' --local

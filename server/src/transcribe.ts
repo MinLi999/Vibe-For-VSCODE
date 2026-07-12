@@ -1,61 +1,58 @@
+import type { AuthResult } from './auth';
+import { haikuRewrite, HAIKU_MODEL } from './engines/anthropicRewrite';
+import { llamaRewrite } from './engines/cfLlama';
+import { whisperTranscribe } from './engines/cfWhisper';
+import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
+import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
+import { HttpError, toReasonCode } from './errors';
+import { buildQwenContext, buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT } from './prompts';
 import type {
   Env,
+  RewriteMode,
+  Tier,
   TranscribeRequestBody,
   TranscribeResponseBody,
-  WhisperTurboInput,
-  WhisperTurboOutput,
 } from './types';
 
-const MODEL_ID = '@cf/openai/whisper-large-v3-turbo';
+/** Payload ceilings per tier (base64 chars). Quality stays within DashScope's 10MB data-URI cap. */
+const MAX_AUDIO_BASE64_QUALITY = 8 * 1024 * 1024;
+const MAX_AUDIO_BASE64_FREE = 4 * 1024 * 1024;
 
-/** MAX_AUDIO_BASE64: 8MB base64 (≈6MB audio). A 25s 32kbps MP3 is only ~100KB; this is a hard ceiling, not the norm. */
-const MAX_AUDIO_BASE64 = 8 * 1024 * 1024;
-
-/** Safe truncation length for Whisper's initial_prompt (leaves headroom for prompt tokens). */
-const MAX_INITIAL_PROMPT_CHARS = 896;
+/** UTF-8 byte budget for the Whisper initial_prompt (prev-transcript + scaffold + keywords). */
+const WHISPER_PROMPT_BUDGET_BYTES = 800;
 
 const MAX_KEYWORDS = 40;
 const MAX_KEYWORD_LENGTH = 64;
+const MAX_PROJECT_CONTEXT_CHARS = 8000;
+/** Rewriting a near-empty utterance wastes 0.5-2s of latency for nothing. */
+const MIN_REWRITE_CHARS = 10;
+
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const LANGUAGE_PATTERN = /^[a-z]{2}$/;
-
-export class HttpError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+const REWRITE_MODES: readonly RewriteMode[] = ['off', 'clean', 'rewrite'];
 
 /**
  * Assembles the client's keyword list into Whisper's initial_prompt:
  * a Chinese scene-setting sentence + comma-separated vocabulary. Whisper treats this as
  * preceding context, biasing similar-sounding speech toward these code identifiers
  * (preventing variable names from being transcribed as phonetically-similar Chinese characters).
+ * Only used on the Whisper path — Qwen3-ASR gets the far roomier context channel instead.
  */
 export function buildInitialPrompt(keywords: string[], previousTranscript?: string): string | undefined {
-  const cleaned = keywords
-    .filter((k): k is string => typeof k === 'string')
-    .map((k) => k.trim())
-    .filter((k) => k.length > 0 && k.length <= MAX_KEYWORD_LENGTH)
-    .slice(0, MAX_KEYWORDS);
-
   let promptVal = '';
   if (previousTranscript && previousTranscript.trim().length > 0) {
     promptVal += previousTranscript.trim().slice(-300) + '。';
   }
 
-  if (cleaned.length > 0) {
+  if (keywords.length > 0) {
     const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
     const suffix = ' 这些。现在我要开始说一下修改思路。';
-    const maxBytes = 800;
     const encoder = new TextEncoder();
     let keywordsPart = '';
-    for (let i = 0; i < cleaned.length; i++) {
+    for (let i = 0; i < keywords.length; i++) {
       const sep = i === 0 ? '' : '、';
-      const part = sep + cleaned[i];
-      if (encoder.encode(promptVal + prefix + keywordsPart + part + suffix).length > maxBytes) {
+      const part = sep + keywords[i];
+      if (encoder.encode(promptVal + prefix + keywordsPart + part + suffix).length > WHISPER_PROMPT_BUDGET_BYTES) {
         break;
       }
       keywordsPart += part;
@@ -68,14 +65,23 @@ export function buildInitialPrompt(keywords: string[], previousTranscript?: stri
   return promptVal.length > 0 ? promptVal : undefined;
 }
 
-/** Validates and normalizes the request body; throws HttpError directly if invalid. */
-export function parseRequestBody(raw: unknown): Required<Pick<TranscribeRequestBody, 'audio' | 'language'>> & {
+interface ParsedRequest {
+  audio: string;
+  language: string;
   keywords: string[];
+  projectContext?: string;
   previousTranscript?: string;
-  llmCorrect?: boolean;
-  llmPrompt?: string;
-  llmModel?: string;
-} {
+  rewriteMode: RewriteMode;
+  enginePreference: 'auto' | 'cloudflare';
+  compareRewrite: boolean;
+}
+
+/**
+ * Validates and normalizes the request body; throws HttpError directly if invalid.
+ * v1/v2 compatible: `rewriteMode` marks a v2 request; a v1 `llmCorrect: true` maps to 'clean'.
+ * v1 `llmPrompt`/`llmModel` are deliberately IGNORED — prompts/models are server-owned.
+ */
+export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRequest {
   if (typeof raw !== 'object' || raw === null) {
     throw new HttpError(400, 'Request body must be a JSON object');
   }
@@ -85,8 +91,8 @@ export function parseRequestBody(raw: unknown): Required<Pick<TranscribeRequestB
   if (typeof audio !== 'string' || audio.length === 0) {
     throw new HttpError(400, 'Field "audio" (base64 string) is required');
   }
-  if (audio.length > MAX_AUDIO_BASE64) {
-    throw new HttpError(413, `Audio payload too large (>${MAX_AUDIO_BASE64} base64 chars); keep recordings under the client limit`);
+  if (audio.length > maxAudioBase64) {
+    throw new HttpError(413, `Audio payload too large (>${maxAudioBase64} base64 chars); keep recordings under the client limit`);
   }
   if (!BASE64_PATTERN.test(audio)) {
     throw new HttpError(400, 'Field "audio" is not valid base64');
@@ -105,19 +111,42 @@ export function parseRequestBody(raw: unknown): Required<Pick<TranscribeRequestB
     if (!Array.isArray(body['keywords'])) {
       throw new HttpError(400, 'Field "keywords" must be an array of strings');
     }
-    keywords = body['keywords'].filter((k): k is string => typeof k === 'string');
+    keywords = body['keywords']
+      .filter((k): k is string => typeof k === 'string')
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0 && k.length <= MAX_KEYWORD_LENGTH)
+      .slice(0, MAX_KEYWORDS);
+  }
+
+  let projectContext: string | undefined;
+  if (body['projectContext'] !== undefined) {
+    if (typeof body['projectContext'] !== 'string') {
+      throw new HttpError(400, 'Field "projectContext" must be a string');
+    }
+    projectContext = body['projectContext'].slice(0, MAX_PROJECT_CONTEXT_CHARS);
   }
 
   const previousTranscript = typeof body['previousTranscript'] === 'string' ? body['previousTranscript'] : undefined;
-  const llmCorrect = typeof body['llmCorrect'] === 'boolean' ? body['llmCorrect'] : undefined;
-  const llmPrompt = typeof body['llmPrompt'] === 'string' ? body['llmPrompt'] : undefined;
-  const llmModel = typeof body['llmModel'] === 'string' ? body['llmModel'] : undefined;
 
-  return { audio, language, keywords, previousTranscript, llmCorrect, llmPrompt, llmModel };
+  let rewriteMode: RewriteMode;
+  if (body['rewriteMode'] !== undefined) {
+    if (typeof body['rewriteMode'] !== 'string' || !REWRITE_MODES.includes(body['rewriteMode'] as RewriteMode)) {
+      throw new HttpError(400, 'Field "rewriteMode" must be one of "off" | "clean" | "rewrite"');
+    }
+    rewriteMode = body['rewriteMode'] as RewriteMode;
+  } else {
+    // v1 request: llmCorrect:true meant "run the correction pass", which is today's 'clean'.
+    rewriteMode = body['llmCorrect'] === true ? 'clean' : 'off';
+  }
+
+  const enginePreference = body['enginePreference'] === 'cloudflare' ? 'cloudflare' : 'auto';
+  const compareRewrite = body['compareRewrite'] === true;
+
+  return { audio, language, keywords, projectContext, previousTranscript, rewriteMode, enginePreference, compareRewrite };
 }
 
-/** Core handler: validate → build prompt → call Whisper → build response. */
-export async function handleTranscribe(request: Request, env: Env): Promise<TranscribeResponseBody> {
+/** Core handler: validate → tier routing → ASR chain → rewrite chain → assemble v2 response. */
+export async function handleTranscribe(request: Request, env: Env, auth: AuthResult & { ok: true }): Promise<TranscribeResponseBody> {
   let raw: unknown;
   try {
     raw = await request.json();
@@ -125,53 +154,107 @@ export async function handleTranscribe(request: Request, env: Env): Promise<Tran
     throw new HttpError(400, 'Request body must be valid JSON');
   }
 
-  const { audio, language, keywords, previousTranscript, llmCorrect, llmPrompt, llmModel } = parseRequestBody(raw);
-  const initialPrompt = buildInitialPrompt(keywords, previousTranscript);
+  const tier: Tier = auth.metadata?.plan === 'pro' ? 'quality' : 'free';
+  const body = parseRequestBody(raw, tier === 'quality' ? MAX_AUDIO_BASE64_QUALITY : MAX_AUDIO_BASE64_FREE);
 
-  const input: WhisperTurboInput = {
-    audio,
-    task: 'transcribe',
-    // Explicit language lock (defaults to zh) bypasses the extra latency and misdetection
-    // that Whisper's automatic language detection introduces.
-    language,
-    vad_filter: true,
-    ...(initialPrompt !== undefined ? { initial_prompt: initialPrompt } : {}),
-  };
-
+  const fallback: { asr?: string; rewrite?: string } = {};
   const started = Date.now();
-  // Workers AI's model-id → input/output mapping is determined at runtime; this calls the
-  // whisper-large-v3-turbo JSON shape (audio=base64) per the 2026 docs and declares the
-  // fields this service consumes locally.
-  const result = (await env.AI.run(
-    MODEL_ID as Parameters<Ai['run']>[0],
-    input as unknown as Parameters<Ai['run']>[1],
-  )) as WhisperTurboOutput;
+  const continent = (request.cf as { continent?: string } | undefined)?.continent;
 
-  let text = typeof result?.text === 'string' ? result.text.trim() : '';
-  if (text.length === 0) {
+  // --- ASR stage: Qwen3-ASR (quality tier, region-aware) with Cloudflare Whisper fallback ---
+  // API keys are region-locked (a Singapore key 403s against the US endpoint), so the resolved
+  // region carries its own key; missing key for THIS user's region falls straight to Whisper.
+  let rawText = '';
+  let asrEngine: TranscribeResponseBody['engines']['asr'] = 'cf-whisper-large-v3-turbo';
+
+  if (tier === 'quality' && body.enginePreference !== 'cloudflare') {
+    const region = resolveQwenRegion(env, continent);
+    if (region.apiKey) {
+      try {
+        rawText = await qwenTranscribe(region, body.audio, body.language, buildQwenContext(body.keywords, body.projectContext, body.previousTranscript));
+        asrEngine = 'qwen3-asr-flash';
+      } catch (err) {
+        fallback.asr = toReasonCode(err, 'dashscope');
+      }
+    }
+  }
+  if (asrEngine !== 'qwen3-asr-flash') {
+    rawText = await whisperTranscribe(env, body.audio, body.language, buildInitialPrompt(body.keywords, body.previousTranscript));
+  }
+  const asrMs = Date.now() - started;
+
+  if (rawText.length === 0) {
     throw new HttpError(502, 'Transcription produced no text (silent audio or model failure)');
   }
 
-  // Handle LLM post-processing correction on Cloudflare side
-  if (llmCorrect) {
-    const prompt = llmPrompt || '你是一个编程语音转文字后处理器。请修正转写文本中的错误标点，修复代码标识符拼写，去除填充词，不要改变原意。直接输出修改后的文本，不要带有任何解释或包裹符号。';
-    const model = llmModel || '@cf/meta/llama-3.1-8b-instruct';
-    try {
-      const llmResult = await env.AI.run(model as any, {
-        messages: [
-          { role: 'system', content: prompt },
-          { role: 'user', content: `参考代码词表：${keywords.join(', ')}\n\n待转写文本：${text}` }
-        ]
-      });
-      const responseText = (llmResult as any).response || (llmResult as any).text;
-      if (typeof responseText === 'string' && responseText.trim().length > 0) {
-        text = responseText.trim();
-      }
-    } catch (err) {
-      console.error('[Cloudflare Workers AI LLM Correction Error]', err);
-      // Fail gracefully: return the raw transcribed text on error instead of failing the request
-    }
-  }
+  // --- Rewrite stage: Haiku 4.5 (quality tier) → cf llama → raw text ---
+  // Never changes what gets returned as finalText/inserted by the client.
+  let finalText = rawText;
+  let rewriteEngine: TranscribeResponseBody['engines']['rewrite'] = 'none';
+  const rewriteStarted = Date.now();
 
-  return { text, duration_ms: Date.now() - started };
+  // --- Shadow comparison: Qwen-Plus rewrite, run CONCURRENTLY with the primary chain so the
+  // evaluation adds ~0 sequential latency (bounded by whichever engine is slower). Never used
+  // as finalText — evaluation-only signal reported in `rewriteComparison` (see the "why Claude
+  // vs Alibaba's own model" discussion this round: cheaper Qwen-Plus reuses the same DashScope
+  // key/region already required for ASR, so this is a free-to-wire A/B, not a new dependency.
+  let rewriteComparison: TranscribeResponseBody['rewriteComparison'];
+
+  if (body.rewriteMode !== 'off' && rawText.trim().length >= MIN_REWRITE_CHARS) {
+    const systemPrompt = body.rewriteMode === 'rewrite' ? REWRITE_SYSTEM_PROMPT : CLEAN_SYSTEM_PROMPT;
+    const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.previousTranscript);
+
+    const primaryRewrite = (async () => {
+      if (tier === 'quality' && env.ANTHROPIC_API_KEY) {
+        try {
+          finalText = await haikuRewrite(env, systemPrompt, userMessage);
+          rewriteEngine = HAIKU_MODEL;
+          return;
+        } catch (err) {
+          fallback.rewrite = toReasonCode(err, 'anthropic');
+        }
+      }
+      try {
+        finalText = await llamaRewrite(env, systemPrompt, userMessage);
+        rewriteEngine = 'cf-llama-3.1-8b-instruct';
+      } catch (err) {
+        // Graceful degradation: keep the raw transcription rather than failing the request.
+        fallback.rewrite = fallback.rewrite ?? toReasonCode(err, 'cf_llama');
+        finalText = rawText;
+      }
+    })();
+
+    const shadowQwenRewrite =
+      tier === 'quality' && body.compareRewrite
+        ? (async () => {
+            const region = resolveQwenRewriteRegion(env, continent);
+            const qwenStarted = Date.now();
+            try {
+              const text = await qwenRewrite(region, systemPrompt, userMessage);
+              rewriteComparison = { qwenText: text, qwenMs: Date.now() - qwenStarted };
+            } catch (err) {
+              rewriteComparison = { qwenError: toReasonCode(err, 'qwen_rewrite'), qwenMs: Date.now() - qwenStarted };
+            }
+          })()
+        : Promise.resolve();
+
+    await Promise.all([primaryRewrite, shadowQwenRewrite]);
+  }
+  const rewriteMs = Date.now() - rewriteStarted;
+  const totalMs = Date.now() - started;
+
+  return {
+    text: finalText,
+    duration_ms: totalMs,
+    rawText,
+    finalText,
+    tier,
+    engines: { asr: asrEngine, rewrite: rewriteEngine },
+    timings: { asr_ms: asrMs, rewrite_ms: rewriteMs, total_ms: totalMs },
+    ...(fallback.asr || fallback.rewrite ? { fallback } : {}),
+    ...(rewriteComparison ? { rewriteComparison } : {}),
+  };
 }
+
+// Re-exported so index.ts keeps a single import site for handler + error type.
+export { HttpError } from './errors';

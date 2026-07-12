@@ -24,6 +24,28 @@
     }
   ],
 
+  // 区域感知路由:亚太走新加坡区,其余走美国区(engines/qwenAsr.ts resolveQwenRegion)。
+  // 阿里云 DashScope key 按区域隔离、不能跨区使用,因此需要两把独立的 key:
+  // `npx wrangler secret put DASHSCOPE_API_KEY_APAC`(新加坡区 console 生成)
+  // `npx wrangler secret put DASHSCOPE_API_KEY_US`(美国/Virginia 区 console 生成)
+  // 以及 `npx wrangler secret put ANTHROPIC_API_KEY`。密钥值绝不进本文件(红线 2)。
+  "vars": {
+    "DASHSCOPE_BASE_URL_APAC": "https://dashscope-intl.aliyuncs.com",
+    "DASHSCOPE_BASE_URL_US": "https://dashscope-us.aliyuncs.com",
+    "QWEN_MODEL_APAC": "qwen3-asr-flash",
+    "QWEN_MODEL_US": "qwen3-asr-flash-us",
+    // 评估用改写引擎(与 Haiku 并行跑对比,不需要区域后缀)
+    "QWEN_REWRITE_MODEL": "qwen-plus"
+  },
+
+  // 按 license key 限流(per-colo 计数,MVP 够用;严格全局限流将来上 Durable Objects)
+  "unsafe": {
+    "bindings": [
+      { "name": "RL_FREE", "type": "ratelimit", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+      { "name": "RL_PRO", "type": "ratelimit", "namespace_id": "1002", "simple": { "limit": 40, "period": 60 } }
+    ]
+  },
+
   "observability": {
     "enabled": true
   }

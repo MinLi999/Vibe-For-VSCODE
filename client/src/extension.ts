@@ -9,22 +9,28 @@ import { VocabularyModel } from './models/VocabularyModel';
 import { StatusBarViewer } from './viewer/StatusBarViewer';
 import { TextInserter } from './viewer/TextInserter';
 import { EditorContextViewer } from './viewer/EditorContextViewer';
+import { RewriteComparisonViewer } from './viewer/RewriteComparisonViewer';
 import { AudioRecorderService } from './services/AudioRecorderService';
 import { CloudflareApiService } from './services/CloudflareApiService';
 import { WorkspaceContextService } from './services/WorkspaceContextService';
-import { VibeController, getActiveKeybinding } from './controllers/VibeController';
+import { SystemPasteService } from './services/SystemPasteService';
+import { KeybindingLookupService } from './services/KeybindingLookupService';
+import { VibeController } from './controllers/VibeController';
 
 export function activate(context: vscode.ExtensionContext): void {
   const audioState = new AudioState();
   const vocabulary = new VocabularyModel();
 
-  const statusBar = new StatusBarViewer(() => getActiveKeybinding());
+  const keybindingLookup = new KeybindingLookupService();
+  const statusBar = new StatusBarViewer(() => keybindingLookup.getActiveKeybinding());
   const inserter = new TextInserter();
   const editorContext = new EditorContextViewer();
+  const rewriteComparison = new RewriteComparisonViewer();
   const workspaceContext = new WorkspaceContextService();
 
   const recorder = new AudioRecorderService();
   const api = new CloudflareApiService();
+  const systemPaste = new SystemPasteService();
 
   const controller = new VibeController(
     context.secrets,
@@ -36,10 +42,13 @@ export function activate(context: vscode.ExtensionContext): void {
     recorder,
     api,
     workspaceContext,
+    systemPaste,
+    keybindingLookup,
+    rewriteComparison,
   );
   controller.registerCommands(context);
 
-  context.subscriptions.push(statusBar, editorContext, workspaceContext, controller);
+  context.subscriptions.push(statusBar, editorContext, rewriteComparison, workspaceContext, controller);
 }
 
 export function deactivate(): void {

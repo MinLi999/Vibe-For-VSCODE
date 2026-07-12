@@ -10,12 +10,23 @@ import * as vscode from 'vscode';
 const RECENT_FILE_LIMIT = 15;
 const FIND_EXCLUDE = '**/{node_modules,dist,out,.git}/**';
 
-import { type DocumentContext } from '../models/VocabularyModel';
+/** Structurally identical to models/VocabularyModel's DocumentContext — declared locally so the
+ *  viewer never imports the Model layer (02-STANDARDS §2); TypeScript's structural typing bridges them. */
+interface DocumentContext {
+  text: string;
+  key: string;
+}
 
 export interface EditorSnapshot {
   documents: DocumentContext[];
   fileNames: string[];
   activeDocumentKey?: string;
+  /** Workspace-relative path of the last real (file-backed) active editor. */
+  activeFilePath?: string;
+  /** VS Code languageId of the last real active editor. */
+  activeLanguageId?: string;
+  /** Workspace (folder) name. */
+  workspaceName?: string;
 }
 
 export class EditorContextViewer implements vscode.Disposable {
@@ -53,11 +64,13 @@ export class EditorContextViewer implements vscode.Disposable {
         key: `${doc.uri.toString()}@${doc.version}`,
       }));
 
-    const activeDocumentKey = this.lastRealEditor
-      ? `${this.lastRealEditor.document.uri.toString()}@${this.lastRealEditor.document.version}`
-      : undefined;
+    const activeDoc = this.lastRealEditor?.document;
+    const activeDocumentKey = activeDoc ? `${activeDoc.uri.toString()}@${activeDoc.version}` : undefined;
+    const activeFilePath = activeDoc ? vscode.workspace.asRelativePath(activeDoc.uri, false) : undefined;
+    const activeLanguageId = activeDoc?.languageId;
+    const workspaceName = vscode.workspace.name;
 
-    return { documents, fileNames, activeDocumentKey };
+    return { documents, fileNames, activeDocumentKey, activeFilePath, activeLanguageId, workspaceName };
   }
 
   dispose(): void {

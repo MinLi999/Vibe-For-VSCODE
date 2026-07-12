@@ -11,7 +11,9 @@ export type InsertTarget = 'auto' | 'editor' | 'terminal' | 'clipboard' | 'chat'
 export type InsertOutcome =
   | { via: 'editor' }
   | { via: 'terminal'; terminalName: string }
-  | { via: 'chat' }
+  /** needsSystemPaste: a webview chat panel took focus with the text on the clipboard —
+   *  the Controller should trigger a system-level paste (viewer must not spawn processes). */
+  | { via: 'chat'; needsSystemPaste: boolean }
   | { via: 'clipboard' };
 
 export class TextInsertionError extends Error {}
@@ -112,28 +114,16 @@ export class TextInserter {
           query: text,
           isPartialQuery: true,
         });
-        // Copilot Chat has a native query API, so we return early — no need for AppleScript paste
-        return { via: 'chat' };
+        // Copilot Chat has a native query API — no system paste needed.
+        return { via: 'chat', needsSystemPaste: false };
       } catch (err) {
         // Ignore built-in Copilot Chat open failure
       }
     }
 
-    // On macOS, try to trigger a system-level paste via AppleScript so it enters any active focused webview input (best effort)
-    if (process.platform === 'darwin') {
-      try {
-        const { exec } = require('child_process');
-        // Give 150ms for the chat/composer pane to gain focus before triggering paste
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        exec(`osascript -e 'tell application "System Events" to keystroke "v" using {command down}'`, (error: any) => {
-          // Silent catch to prevent crash if Assistive Access (Accessibility) permissions are missing in macOS Settings
-        });
-      } catch {
-        // Ignore if child_process fails
-      }
-    }
-
-    return { via: 'chat' };
+    // A webview chat panel has focus (or nothing focused) with text on the clipboard;
+    // process spawning is forbidden in the viewer, so the Controller performs the system paste.
+    return { via: 'chat', needsSystemPaste: true };
   }
 
   private async intoClipboard(text: string): Promise<InsertOutcome> {

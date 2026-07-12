@@ -2,10 +2,21 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 2 精度与语法提升完成 & 线上部署通过 (2026-07-10)。
-**健康度**:🟢 客户端大模型纠错、VAD上下文继承、Developer Mode 语法规则引擎已全部落地并完成 wrangler 线上部署，双端编译与打包正常。
+**阶段**:Phase 2.5「超越竞品」双引擎重构完成,待部署 (2026-07-12)。
+**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿。⚠️ 待办:①用户提供 DASHSCOPE_API_KEY_APAC + DASHSCOPE_API_KEY_US(阿里云按区域隔离,两把独立 key,美国区无免费额度需单独开通计费)与 ANTHROPIC_API_KEY 后 `wrangler secret put` + `/deploy`;②质量档真实语音验证(新加坡区 + 美国区各测一次);③本机 Node 20 无法跑 wrangler 4 dev(需 Node ≥22),线上冒烟移至部署时。
+- 2026-07-12(修正):查阿里云官方文档发现 DashScope API Key **按区域隔离、不能跨区调用**(新加坡 key 打美国区端点会 403);原设计的单一 `DASHSCOPE_API_KEY` 是缺口,已改为 `DASHSCOPE_API_KEY_APAC` / `DASHSCOPE_API_KEY_US` 两个独立 secret,`resolveQwenRegion` 按解析出的区域一并返回对应 key(`server/src/engines/qwenAsr.ts`)。
+- 2026-07-12(新增,评估用):用户质疑"为何改写引擎用 Claude Haiku 而不用阿里云自己的模型"—— 查证 Qwen-Plus 国际版定价确实比 Haiku 4.5 便宜 2~4 倍,但"更懂中英混杂"这个说法查无可信依据(第三方比较网站的 benchmark 数字不可信)。决定:**Haiku 与 Qwen-Plus 两条改写线路并行跑几天**,由用户实际听感判断。实现:`server/src/engines/qwenRewrite.ts`(DashScope 原生 text-generation 接口,模型 `qwen-plus`,复用 ASR 已有的区域 key,不需要新增 secret);`transcribe.ts` 里 Haiku(主链路,决定实际插入文本)与 Qwen-Plus(影子调用,仅供比较)用 `Promise.all` 并发跑,不增加串行延迟;响应新增 `rewriteComparison` 字段。客户端新增 `vibefox.rewriteCompareEnabled` 设置(默认关)+ `RewriteComparisonViewer`(新 Output Channel「VibeFox: Rewrite Comparison (Haiku vs Qwen)」),开启后每次转写都会把原文/两个引擎结果并排写入面板。评估期结束后建议关闭该设置(省调用成本)。
 
 ## 最近完成
+- 2026-07-12:Phase 2.5 —— 对标 Wispr Flow/Aqua Voice 的「超越竞品」全量重构(竞品调研 + 2026-07 模型选型 + 全代码库审计驱动):
+  ① **服务端双引擎(协议 v2)**:质量档(KV license `plan:"pro"`)= Qwen3-ASR(DashScope multimodal 同步接口,context enhancement 通道吃整段项目上下文,区域感知路由亚太→新加坡/其余→美国,8s 超时)+ Claude Haiku 4.5 改写(clean/rewrite 双模式服务端 prompt,含回溯自纠折叠);免费档/降级链 = CF Whisper(补上 temperature:0)+ llama-3.1-8b;短文本(<10 字符)跳过改写。响应含 rawText/finalText/tier/engines/timings/fallback,v1 完全兼容。
+  ② **安全加固**:v2 不再接受客户端 llmPrompt/llmModel(计费滥用面清零,v1 传入直接忽略);按 key 限流(Rate Limiting binding,free 10/分、pro 40/分→429);载荷上限按档(free 4MB/pro 8MB)。
+  ③ **rewriteMode 三档**(off/clean/rewrite,默认 clean):废弃 llmCorrection* 设置(首启自动迁移),状态栏 tooltip 显示模式+一键切换(QuickPick),非 cloudflare provider 走客户端内置 prompt 兜底(顺带修复 provider 解析为 cloudflare 时静默跳过纠错的 bug)。
+  ④ **两级上下文载荷**:keywords[40](活动文档 top20→工作区 top15→文件名)+ projectContext(≤2000 字符,含原始大小写符号/imports/相关文件);会话级构建一次缓存,VAD 分段不再每段重扫工作区/重读配置。
+  ⑤ **VAD 修复三连**:sessionTranscript 300 字窗口(修复无界累积的上下文污染);结尾段不再按振幅丢弃(轻声尾词不丢,交 ASR 判定);自适应静音阈值(噪声底 500ms 自校准+快降慢升,`vadAdaptiveThreshold` 默认开)。
+  ⑥ **通知去噪**:删除每段 toast,段级错误累积会话结束一条汇总;成功反馈改为状态栏统计「✓ N字(M段) · Qwen3+Haiku · X.Xs」。
+  ⑦ **分层违规清零(DoD grep 全绿)**:AudioRecorderService 去 vscode 依赖(错误走 onSegmentError 回调);AppleScript 粘贴从 TextInserter 移入新 SystemPasteService(viewer 返回 needsSystemPaste 由 Controller 调度);keybindings.json 读取移入新 KeybindingLookupService;diagnoseAudio 的 ffmpeg spawn 移入 AudioRecorderService.captureSample(顺带修复 avfoundation 硬编码,跨平台可用)。
+  ⑧ **卫生**:修复 developer-mode 文件扩展名正则 `\\.`→`\.`;补 contribute `clearLicenseKey`/`selectRewriteMode`;删死代码(TOP_TOKEN_COUNT/formatHint/MAX_INITIAL_PROMPT_CHARS);VAD 压缩路径补 64kbps;PRD/STANDARDS/CLAUDE.md/DOD 四份文档与代码对齐(此前 32kbps/25s/top40/896 字符等全部过期数值已刷新)。
 - 2026-07-10:Phase 2 —— 精度与语法提升方案全量交付与部署：
   ① **LLM 二次后处理校正**：集成跨服务商的 LLM 后处理引擎。支持通过 `vibefox.llmCorrectionEnabled` 开启，对转写内容执行标点修复、词表拼写校准及固定填充词滤除。针对 Cloudflare 托管 Worker 链路，直接在服务端调用 `@cf/meta/llama-3.1-8b-instruct` 以免去客户端额外调用与 Key 开销，非 Cloudflare 链路在客户端二次执行兼容调用。
   ② **VAD 分段上下文继承**：实现 previous-text conditioning。将前一分段经处理后的转录文本作为下一分段的 prompt 前文，并在 800 字节 prompt 预算限制内动态与 Keywords 混编，彻底解决 VAD 断句后上下文失联与漏字现象。
@@ -34,10 +45,12 @@
 - 2026-07-08:线上冒烟测试通过 —— 无 auth→401、假 key→403、错路径→404,均与本地 wrangler dev 行为一致。200(真实转写)路径留给用户在扩展内用真实录音验证,避免密钥经对话记录暴露。
 - 2026-07-08:DoD 全项通过;顺手修复 docs/03-DOD.md 里一处检查命令的假阴性(双引号 `"zh"` 匹配不到源码里的单引号字符串,已改为 `= 'zh'`)。
 
-## 下一步 (Phase 3)
-1. 离线本地 Whisper 模式（集成 whisper.cpp / ONNX Runtime 等）。
-2. WebSocket 实时流式转写支持。
-3. 中英混合多语言自动识别切换优化。
+## 下一步
+1. **部署与验证**(用户动作):申请阿里云国际版 Model Studio key + Anthropic key → `wrangler secret put` → `/deploy` → 发一个 `plan:"pro"` 测试 key → F5 手测脚本(见 03-DOD/计划文档):默认 clean 档说带填充词的中英混杂句、rewrite 档验证"用A…不对,用B"只留 B、VAD 长录音单条反馈、尾段轻声不丢。
+2. 观察 timings/fallback 遥测:若美洲区 Qwen3-ASR 延迟不理想,引擎抽象层已预留接 ElevenLabs Scribe v2 / Groq。
+3. Phase 3 候选:离线本地 Whisper(whisper.cpp)、WebSocket 实时流式、标点映射表上下文感知("价格大于一百"误转 `>` 问题)、商业化基础设施(试用 key 发放/用量计量/支付)。
 
 ## 阻塞
-- 无硬阻塞。Windows/Linux 录音路径(dshow/pulse)代码就位但本机(macOS)无法实测。
+- 质量档 200 路径验证需要 DASHSCOPE_API_KEY / ANTHROPIC_API_KEY(用户提供)。
+- 本机 Node v20.10.0 跑不动 wrangler 4(需 ≥22),`wrangler dev` 本地冒烟受阻;node@22 已在 Homebrew 后台安装,或部署后直接线上冒烟。
+- Windows/Linux 录音路径(dshow/pulse)代码就位但本机(macOS)无法实测。
