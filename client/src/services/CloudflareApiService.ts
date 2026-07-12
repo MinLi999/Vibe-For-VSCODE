@@ -3,25 +3,39 @@
  * Contract fields stay in sync with server/src/types.ts; errors are mapped to typed Errors for the Controller.
  */
 
+export type RewriteMode = 'off' | 'clean' | 'rewrite';
+
+/** Protocol v2 request (server/src/types.ts TranscribeRequestBody). Prompts/models are server-owned. */
 export interface TranscribeRequest {
   /** Base64 MP3. */
   audio: string;
   language: string;
   keywords: string[];
+  /** Free-form project context for the quality-tier ASR's context-enhancement channel. */
+  projectContext?: string;
   previousTranscript?: string;
-  llmCorrect?: boolean;
-  llmPrompt?: string;
-  llmModel?: string;
+  rewriteMode: RewriteMode;
+  /** Evaluation-only: shadow-run Qwen-Plus rewrite for side-by-side comparison against Haiku. */
+  compareRewrite?: boolean;
 }
 
+/** Protocol v2 response. v1 servers (only `text`) are mapped into this shape for compatibility. */
 export interface TranscribeResponse {
-  text: string;
-  duration_ms: number;
+  /** Raw ASR output before any rewrite. */
+  rawText: string;
+  /** Rewritten output (equals rawText when rewrite was off/skipped). */
+  finalText: string;
+  engines: { asr: string; rewrite: string };
+  timings: { asr_ms: number; rewrite_ms: number; total_ms: number };
+  fallback?: { asr?: string; rewrite?: string };
+  /** Present only when the request set compareRewrite:true. */
+  rewriteComparison?: { qwenText?: string; qwenMs?: number; qwenError?: string };
 }
 
 export type ApiErrorKind =
   | 'unauthorized' // 401/403 — license key missing/invalid, prompt to reset
   | 'payload-too-large' // 413 — recording too long
+  | 'rate-limited' // 429 — per-key rate limit hit
   | 'server' // 5xx / other status codes
   | 'network' // connection failure / DNS
   | 'timeout'; // AbortController timeout
@@ -76,14 +90,47 @@ export class CloudflareApiService {
       if (response.status === 413) {
         throw new ApiError('payload-too-large', detail, response.status);
       }
+      if (response.status === 429) {
+        throw new ApiError('rate-limited', detail, response.status);
+      }
       throw new ApiError('server', detail, response.status);
     }
 
-    const body = (await response.json()) as Partial<TranscribeResponse>;
-    if (typeof body.text !== 'string') {
-      throw new ApiError('server', '转写服务返回了非预期的响应形态', response.status);
+    const body = (await response.json()) as {
+      text?: string;
+      rawText?: string;
+      finalText?: string;
+      engines?: { asr?: string; rewrite?: string };
+      timings?: { asr_ms?: number; rewrite_ms?: number; total_ms?: number };
+      duration_ms?: number;
+      fallback?: { asr?: string; rewrite?: string };
+      rewriteComparison?: { qwenText?: string; qwenMs?: number; qwenError?: string };
+    };
+
+    if (typeof body.finalText === 'string' && typeof body.rawText === 'string') {
+      return {
+        rawText: body.rawText,
+        finalText: body.finalText,
+        engines: { asr: body.engines?.asr ?? 'unknown', rewrite: body.engines?.rewrite ?? 'none' },
+        timings: {
+          asr_ms: body.timings?.asr_ms ?? 0,
+          rewrite_ms: body.timings?.rewrite_ms ?? 0,
+          total_ms: body.timings?.total_ms ?? body.duration_ms ?? 0,
+        },
+        ...(body.fallback ? { fallback: body.fallback } : {}),
+        ...(body.rewriteComparison ? { rewriteComparison: body.rewriteComparison } : {}),
+      };
     }
-    return { text: body.text, duration_ms: body.duration_ms ?? 0 };
+    // v1 server (pre-upgrade Worker): only `text` — map into the v2 shape.
+    if (typeof body.text === 'string') {
+      return {
+        rawText: body.text,
+        finalText: body.text,
+        engines: { asr: 'cf-whisper-large-v3-turbo', rewrite: 'none' },
+        timings: { asr_ms: body.duration_ms ?? 0, rewrite_ms: 0, total_ms: body.duration_ms ?? 0 },
+      };
+    }
+    throw new ApiError('server', '转写服务返回了非预期的响应形态', response.status);
   }
 
   async transcribeGroq(apiKey: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {

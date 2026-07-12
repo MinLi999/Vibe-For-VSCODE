@@ -1,15 +1,23 @@
 /**
- * Model layer: pure logic for context vocabulary extraction — regex tokenizing,
- * top-40 word frequency, filename-stem merging, caching.
+ * Model layer: pure logic for context payload building — regex tokenizing, word frequency
+ * ranking, filename-stem merging, caching, and the two-tier payload assembly
+ * (ranked keywords for prompt biasing + rich projectContext for context-enhancement ASR).
  * Input is raw text/filenames handed in by the Viewer; this layer does not import vscode UI (02-STANDARDS §2).
  */
 
 /** Authoritative regex (02-STANDARDS §3): 4-20 character identifiers. */
 const IDENTIFIER_PATTERN = /[a-zA-Z_][a-zA-Z0-9_]{3,19}/g;
 
-const TOP_TOKEN_COUNT = 40;
+/** Ranked keyword budget: active-doc top slots + workspace top slots, filled to the cap with stems. */
+const KEYWORD_CAP = 40;
+const ACTIVE_DOC_KEYWORD_SLOTS = 20;
+const WORKSPACE_KEYWORD_SLOTS = 15;
 
-/** Small stoplist of common language keywords/noise words — Whisper already knows these, not worth a prompt slot. */
+/** projectContext char budget (~500 tokens): rich free text for the ASR context-enhancement channel. */
+const PROJECT_CONTEXT_MAX_CHARS = 2000;
+const ACTIVE_DOC_SYMBOL_COUNT = 30;
+
+/** Small stoplist of common language keywords/noise words — the ASR already knows these, not worth a slot. */
 const STOP_WORDS = new Set([
   'this', 'that', 'then', 'else', 'true', 'false', 'null', 'undefined',
   'function', 'return', 'const', 'import', 'export', 'from', 'default',
@@ -32,12 +40,24 @@ export interface EditorContextInput {
   /** Recent workspace filenames (with extension). */
   fileNames: string[];
   activeDocumentKey?: string;
+  /** Workspace-relative path of the active file, e.g. "src/controllers/VibeController.ts". */
+  activeFilePath?: string;
+  /** VS Code languageId of the active file, e.g. "typescript". */
+  activeLanguageId?: string;
+  /** Workspace (folder) name. */
+  workspaceName?: string;
+}
+
+/** Two-tier context payload: ranked keywords (prompt biasing) + rich free text (context enhancement). */
+export interface ContextPayload {
+  keywords: string[];
+  projectContext: string;
 }
 
 export class VocabularyModel {
   private docFreqCache = new Map<string, Map<string, number>>();
 
-  private tokensOf(doc: DocumentContext): string[] {
+  private tokensOf(doc: DocumentContext, limit: number): string[] {
     let freq = this.docFreqCache.get(doc.key);
     if (freq === undefined) {
       freq = new Map<string, number>();
@@ -52,82 +72,99 @@ export class VocabularyModel {
     }
     return [...freq.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 30)
+      .slice(0, limit)
       .map(([token]) => token);
   }
 
   /**
-   * Extracts context vocabulary prioritizing:
-   * 1. Active editor document tokens (cursor context)
-   * 2. Global project workspace keywords (class/method symbols from entire project)
-   * 3. Other open document tokens (other tabs context)
-   * 4. Filename stems (tab names context)
+   * Builds the two-tier context payload:
+   * - keywords (≤40, ranked): active-doc top 20 → workspace top 15 → filename stems to fill.
+   *   Consumed by the Whisper-path initial_prompt (800-byte budget applied at send time).
+   * - projectContext (≤2000 chars): structured free text with original-casing identifiers.
+   *   Consumed by the quality-tier ASR's context-enhancement channel (no tight budget).
    */
-  extractKeywords(input: EditorContextInput, workspaceKeywords: string[] = []): string[] {
-    const seen = new Set<string>();
-    const merged: string[] = [];
+  buildPayload(input: EditorContextInput, workspaceKeywords: string[] = []): ContextPayload {
+    this.pruneCache(input);
 
-    const addToken = (token: string) => {
-      const lower = token.toLowerCase();
-      if (!seen.has(lower)) {
-        seen.add(lower);
-        merged.push(token);
-      }
-    };
-
-    // 1. Active document tokens (first priority)
     const activeDoc = input.activeDocumentKey
       ? input.documents.find((d) => d.key === input.activeDocumentKey)
       : input.documents[0];
+    const activeTokens = activeDoc ? this.tokensOf(activeDoc, ACTIVE_DOC_SYMBOL_COUNT) : [];
+    const fileStems = input.fileNames
+      .map((name) => stemOfFileName(name))
+      .filter((stem): stem is string => stem !== null);
 
-    if (activeDoc) {
-      const activeTokens = this.tokensOf(activeDoc);
-      for (const t of activeTokens) {
+    // --- Tier 1: ranked keywords ---
+    const seen = new Set<string>();
+    const keywords: string[] = [];
+    const addToken = (token: string): void => {
+      const lower = token.toLowerCase();
+      if (!seen.has(lower) && keywords.length < KEYWORD_CAP) {
+        seen.add(lower);
+        keywords.push(token);
+      }
+    };
+    for (const t of activeTokens.slice(0, ACTIVE_DOC_KEYWORD_SLOTS)) {
+      addToken(t);
+    }
+    for (const t of workspaceKeywords.slice(0, WORKSPACE_KEYWORD_SLOTS)) {
+      addToken(t);
+    }
+    // Other open documents, then filename stems, fill the remaining slots.
+    for (const doc of input.documents) {
+      if (keywords.length >= KEYWORD_CAP) {
+        break;
+      }
+      if (activeDoc && doc.key === activeDoc.key) {
+        continue;
+      }
+      for (const t of this.tokensOf(doc, 10)) {
         addToken(t);
       }
     }
-
-    // 2. Workspace keywords (second priority: project-wide class/method names)
-    for (const t of workspaceKeywords) {
+    for (const t of fileStems) {
       addToken(t);
     }
 
-    // 3. Other open documents (third priority)
+    // --- Tier 2: projectContext free text (assembled section-by-section under the char budget) ---
+    const sections: string[] = [];
+    if (input.workspaceName) {
+      sections.push(`项目: ${input.workspaceName}`);
+    }
+    if (input.activeFilePath) {
+      sections.push(`当前文件: ${input.activeFilePath}${input.activeLanguageId ? ` (${input.activeLanguageId})` : ''}`);
+    }
+    if (activeTokens.length > 0) {
+      sections.push(`当前文件符号: ${activeTokens.join('、')}`);
+    }
+    if (workspaceKeywords.length > 0) {
+      sections.push(`项目高频标识符: ${workspaceKeywords.join('、')}`);
+    }
+    if (fileStems.length > 0) {
+      sections.push(`相关文件: ${fileStems.join('、')}`);
+    }
+
+    let projectContext = '';
+    for (const section of sections) {
+      const candidate = projectContext.length === 0 ? section : `${projectContext}\n${section}`;
+      if (candidate.length > PROJECT_CONTEXT_MAX_CHARS) {
+        break;
+      }
+      projectContext = candidate;
+    }
+
+    return { keywords, projectContext };
+  }
+
+  /** Drops cache entries for documents that are no longer open. */
+  private pruneCache(input: EditorContextInput): void {
     const currentKeys = new Set(input.documents.map((d) => d.key));
-    // Clean up cache for closed docs
     for (const key of this.docFreqCache.keys()) {
       if (!currentKeys.has(key)) {
         this.docFreqCache.delete(key);
       }
     }
-
-    for (const doc of input.documents) {
-      if (activeDoc && doc.key === activeDoc.key) {
-        continue;
-      }
-      const otherTokens = this.tokensOf(doc);
-      for (const t of otherTokens) {
-        addToken(t);
-      }
-    }
-
-    // 4. File stems (last priority)
-    const fileStems = input.fileNames
-      .map((name) => stemOfFileName(name))
-      .filter((stem): stem is string => stem !== null);
-    for (const t of fileStems) {
-      addToken(t);
-    }
-
-    return merged;
   }
-
-  /** Vocabulary → human-readable hint string (for status bar tooltip / logging). */
-  formatHint(keywords: string[]): string {
-    return keywords.length === 0 ? '' : `context vocabulary: ${keywords.join(', ')}`;
-  }
-
-
 }
 
 /** e.g. `AudioRecorderService.test.ts` → `AudioRecorderService`; drops stems that are all-numeric or too short. */

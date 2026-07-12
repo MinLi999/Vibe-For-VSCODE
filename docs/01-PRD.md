@@ -3,16 +3,19 @@
 
 ## 1. 业务目标
 
-为使用 LLM 聊天扩展(Claude Code、Cline、Copilot Chat)的开发者提供**语音输入**:按下热键说需求(中文优先,夹杂英文代码词汇),松手后 1~3 秒内把转写文本插入光标处/终端/剪贴板。核心卖点:
-- **代码词汇准确**:自动从当前编辑器提取变量名/文件名注入 Whisper 的 `initial_prompt`,专有名词不被音译。
-- **低延迟**:语言锁 `zh` 绕过自动检测;MP3 压缩后 payload 小;Whisper large-v3-turbo 是最快的高质量模型。
-- **商业化就绪**:License Key 鉴权(Cloudflare KV),闭源分发 .vsix。
+为使用 LLM 聊天扩展(Claude Code、Cline、Copilot Chat)的开发者提供**语音输入**:按下热键说需求(中文优先,中英混杂夹带代码词汇),松手后 2~4 秒内把**清理/润色后的**转写文本插入聊天框/光标处/终端/剪贴板。核心卖点(对标 Wispr Flow / Aqua Voice,差异化=中英混杂编程口述唯一深度优化):
+- **双引擎质量档**:订阅链路 = **Qwen3-ASR**(2026 中英 code-switching SOTA 梯队,context enhancement 通道可吃整段项目上下文)+ **Claude Haiku 4.5** 改写(去填充词/口误自纠折叠/标识符保真);免费档 = CF Whisper + llama,自动降级兜底。
+- **项目级上下文**:两级载荷 —— 排序词表(40)偏置 + 自由文本 projectContext(≤2000 字符,当前文件符号/工作区高频标识符/相关文件,保留原始大小写),专有名词不被音译。
+- **改写三档**:`rewriteMode` = off / clean(默认,去填充词修标点校标识符)/ rewrite(折叠"用A…不对,用B"式口误自纠、轻度重组,不改意图)。
+- **低延迟**:语言锁 `zh` 绕过自动检测;区域感知路由(亚太→DashScope 新加坡,其余→美国区);短文本跳过改写;质量档端到端 2.2~4.0s。
+- **商业化就绪**:License Key 鉴权(Cloudflare KV,`plan:"pro"` 元数据路由质量档),按 key 限流,闭源分发 .vsix。
 
 ## 2. 功能矩阵(当前生效)
 
 ### 模块 A:录音与热键
-- 业务逻辑:`ctrl+shift+space` 切换录音;再按停止并转写;`vibefox.cancelRecording` 丢弃;25s 自动停止。
-- 采集方式:**系统 ffmpeg**(macOS avfoundation / Windows dshow / Linux pulse → 16kHz 单声道 32kbps MP3 管道)。webview 录音方案已评估并否决:VS Code 对 webview 麦克风权限限制不可靠(微软官方 VS Code Speech 扩展亦采用原生模块而非 webview)。
+- 业务逻辑:`ctrl+shift+space` 切换录音;再按停止并转写;`vibefox.cancelRecording` 丢弃;`maxRecordSeconds` 自动停止(默认 25s,上限 600s)。
+- 采集方式:**系统 ffmpeg**(macOS avfoundation / Windows dshow / Linux pulse → 16kHz 单声道 64kbps MP3;VAD 模式走 s16le PCM 流客户端切分)。webview 录音方案已评估并否决:VS Code 对 webview 麦克风权限限制不可靠(微软官方 VS Code Speech 扩展亦采用原生模块而非 webview)。
+- **VAD 增量转写**:客户端按静音切分长录音,分段即时转写插入;静音阈值默认**自适应**(噪声底自校准,`vadAdaptiveThreshold`),结尾段不做振幅丢弃(空文本由 ASR 判定后静默跳过);会话级只弹一次统计反馈(字数/段数/引擎/耗时),段级错误累积汇总为一条。
 - **装机负担最小化**(本模块的产品要求):
   1. 三级自动探测:`vibefox.ffmpegPath`(手动指定)→ PATH → 各平台常见安装路径(macOS `/opt/homebrew/bin`、`/usr/local/bin`;Windows winget/choco/scoop 默认位置;Linux `/usr/bin`、`/snap/bin`)。已装用户零操作直接可用(规避 VS Code GUI 启动时 PATH 不含 Homebrew 的坑)。
   2. 未找到时错误提示带「一键安装」按钮:自动打开内置终端并执行平台命令(brew / winget / apt),装完再按热键即用;另提供「手动指定路径」按钮直达设置项。
@@ -22,30 +25,51 @@
   - Service:`AudioRecorderService`(三级探测、ffmpeg 进程、平台参数、MP3 流)
   - Model:`AudioState`(状态机 + Buffer + Base64)
 
-### 模块 B:上下文词汇提取
-- 业务逻辑:对活动编辑器全文跑 `/[a-zA-Z_][a-zA-Z0-9_]{3,19}/g`,词频排序取 top 40,合并最近工作区文件名词干,拼成 hint 注入请求。
+### 模块 B:上下文两级载荷
+- 业务逻辑:每**录音会话**构建一次(VAD 分段复用,不重复扫描):
+  1. `keywords[]`(≤40,排序:活动文档 top20 → 工作区全局 top15 → 其他标签页 → 文件名词干)——供 Whisper 兜底路径的 `initial_prompt` 偏置(800 字节预算);
+  2. `projectContext`(≤2000 字符自由文本:项目名/当前文件+语言/当前文件符号 top30/工作区高频标识符 top100/相关文件,保留原始大小写)——供 Qwen3-ASR context enhancement 通道(约 10k token 上限,无截断博弈)。
+- 工作区全局词频:`WorkspaceContextService` 后台扫描 ≤300 个源码文件(>256KB 跳过),保存/删除增量更新。
 - 分层影响面:
-  - View:`EditorContextViewer`(只读 activeTextEditor 文本 + findFiles 文件名,含 onDidChangeActiveTextEditor 监听,零业务)
-  - Model:`VocabularyModel`(regex/词频/停用词/top-40/hint 拼装,按文档版本缓存)
-  - Controller:编排两者时机(停止录音后、发请求前)
+  - View:`EditorContextViewer`(只读文本快照 + activeFilePath/languageId/workspaceName,零业务)
+  - Model:`VocabularyModel.buildPayload`(regex/词频/停用词/两级载荷拼装,按文档版本缓存)
+  - Service:`WorkspaceContextService`(后台扫描 I/O)
+  - Controller:会话开始时构建并缓存(`sessionContext`)
 
-### 模块 C:云端转写
-- 业务逻辑:POST `/api/transcribe`,Bearer License Key → KV 校验;`@cf/openai/whisper-large-v3-turbo`,`language:"zh"` 锁定,keywords 动态注入 `initial_prompt`,`vad_filter` 开。
+### 模块 C:云端转写(协议 v2,双引擎)
+- 业务逻辑:POST `/api/transcribe`,Bearer License Key → KV 校验(`plan:"pro"` → 质量档)→ 按 key 限流(free 10 次/分,pro 40 次/分,429)。
+- 请求:`{ audio, language?, keywords?, projectContext?, previousTranscript?, rewriteMode, enginePreference? }`;响应:`{ text, duration_ms /*v1兼容*/, rawText, finalText, tier, engines, timings, fallback? }`。v1 请求(`llmCorrect`)兼容,`llmPrompt`/`llmModel` 一律忽略(模型与提示词服务端所有,防计费滥用)。
+- 引擎路由:质量档 = Qwen3-ASR(区域感知:亚太→新加坡区/其余→美国区,8s 超时)→失败降级 CF Whisper(temperature:0);改写 = Haiku 4.5(10s 超时)→ CF llama → 原文。免费档 = CF Whisper + llama。<10 字符跳过改写。
 - 分层影响面:
-  - Service(client):`CloudflareApiService`(fetch + AbortController 60s + 错误映射)
-  - Server:`server/src/{index,auth,transcribe,types}.ts`
+  - Service(client):`CloudflareApiService`(fetch + AbortController 60s + 错误映射含 429;v1 响应兼容映射)
+  - Server:`server/src/{index,auth,transcribe,types,prompts,ratelimit,errors}.ts` + `engines/{qwenAsr,anthropicRewrite,cfWhisper,cfLlama}.ts`
 
 ### 模块 D:文本插入
-- 业务逻辑:`vibefox.insertTarget` = `auto`(编辑器光标 → 活动终端 sendText → 剪贴板+提示)/ `editor` / `terminal` / `clipboard`。
-- 已知约束:**webview 聊天输入框(Copilot Chat/Cline)无跨扩展 API 可直接写入**,可靠路径是剪贴板 + 用户 ⌘V;Claude Code CLI 跑在终端里,`terminal.sendText` 可直达。
-- 分层影响面:View:`TextInserter`;Controller:选择时机与错误兜底。
+- 业务逻辑:`vibefox.insertTarget` = `auto`(编辑器光标 → 活动终端 sendText → chat 面板 → 剪贴板+提示)/ `editor` / `terminal` / `clipboard` / `chat`。
+- Chat 路径:先复制到剪贴板,依次尝试已知 chat 聚焦命令(Antigravity/Cursor/Cline/Continue/Cody/Amazon Q/Windsurf,首成功即停);内置 Copilot Chat 有原生 query API 直接填入;其余 webview 面板由 Controller 调 `SystemPasteService` 触发系统级 ⌘V(macOS AppleScript)。
+- 已知约束:**webview 聊天输入框无跨扩展 API 可直接写入**;Claude Code CLI 跑在终端里,`terminal.sendText` 可直达。
+- 分层影响面:View:`TextInserter`(返回 `needsSystemPaste` 提示);Service:`SystemPasteService`;Controller:调度与错误兜底。
 
 ### 模块 E:鉴权生命周期
-- 业务逻辑:`vibefox.setLicenseKey` 存 SecretStorage;首次录音无 key 时引导输入;服务端 401/403 时提示重新输入。
+- 业务逻辑:`vibefox.setLicenseKey` 存 SecretStorage;首次录音无 key 时引导输入;服务端 401/403 时提示重新输入;429 提示稍候。
 - 分层影响面:Controller(生命周期)、Service(携带 Bearer)、Server(`auth.ts`)。
+
+### 模块 F:改写引擎(rewriteMode)
+- 业务逻辑:三档 `vibefox.rewriteMode`(默认 **clean**):
+  - `off` 原样转写;
+  - `clean` 最小清理:修标点、去填充词(嗯/啊/那个/就是说/um/uh)、合并口吃重复、按词表校正标识符拼写大小写,不改语序;
+  - `rewrite` 深度润色:clean + 回溯自我更正折叠("用A…不对,用B"只留 B;"删掉刚才那句"执行撤回)、轻度语法重组,绝不改变技术意图、绝不添加原文没有的内容。
+- 提示词服务端所有(`server/src/prompts.ts`);中英混排不翻译;口述符号词(如"等号")保留文字,由客户端 developer-mode 规则最后转符号(职责分离,天然幂等)。
+- Cloudflare 链路服务端执行(Haiku→llama→原文);其他 provider 客户端调对应 chat 端点执行(内置 clean/rewrite 两套 prompt)。
+- UX:状态栏 tooltip 显示当前模式并可一键切换(`vibefox.selectRewriteMode` QuickPick);旧 `llmCorrectionEnabled` 首次启动自动迁移(true→clean,false→off)。
+- 分层影响面:Controller(`processUtterance` 管线)、Server(`prompts.ts` + `engines/`)、View(`StatusBarViewer` 模式显示/统计)。
+
+### 模块 G:多 Provider 兜底
+- 业务逻辑:`vibefox.apiProvider` = cloudflare(默认,订阅旗舰)/ groq / openai / aliyun(paraformer 异步流)/ custom。非 cloudflare 走客户端 Whisper prompt 偏置 + 客户端 LLM 改写。
+- 分层影响面:Service:`CloudflareApiService` 各 transcribe* 方法;Controller:provider 分发与 key 管理(SecretStorage)。
 
 ## 3. 绝对禁止(Out of Scope)
 - Marketplace 发布/签名流程、支付/授权门户(key 用 wrangler CLI 手工发放)。
-- 流式增量转写(等 Workers AI 支持再议)。
+- WebSocket 实时流式转写(客户端 VAD 增量已覆盖长录音场景;真流式等 Phase 3)。
 - 捆绑 ffmpeg/sox 二进制((L)GPL 风险);webview 录音(权限不可靠,已评估否决)。
 - Windows/Linux 的人工实测(代码路径保留,本机 macOS 无法验证)。

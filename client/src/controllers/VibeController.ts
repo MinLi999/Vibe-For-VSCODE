@@ -4,55 +4,18 @@
  * (SecretStorage), timeout auto-stop, error fallback (all user-facing actionable copy is assembled here).
  */
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { spawn } from 'child_process';
 
 import { AudioState } from '../models/AudioState';
-import { VocabularyModel } from '../models/VocabularyModel';
-import { StatusBarViewer } from '../viewer/StatusBarViewer';
-import { TextInserter, TextInsertionError, type InsertTarget } from '../viewer/TextInserter';
+import { VocabularyModel, type ContextPayload } from '../models/VocabularyModel';
+import { StatusBarViewer, REWRITE_MODE_LABELS } from '../viewer/StatusBarViewer';
+import { TextInserter, TextInsertionError, type InsertTarget, type InsertOutcome } from '../viewer/TextInserter';
 import { EditorContextViewer } from '../viewer/EditorContextViewer';
+import { RewriteComparisonViewer } from '../viewer/RewriteComparisonViewer';
 import { AudioRecorderService, FfmpegNotFoundError, RecorderStartError } from '../services/AudioRecorderService';
-import { ApiError, CloudflareApiService } from '../services/CloudflareApiService';
+import { ApiError, CloudflareApiService, type RewriteMode } from '../services/CloudflareApiService';
 import { WorkspaceContextService } from '../services/WorkspaceContextService';
-
-export function getActiveKeybinding(): string {
-  const defaultKey = 'Ctrl+Shift+Space';
-  const appDirs = ['Antigravity IDE', 'Cursor', 'Code', 'Code - Insiders', 'VSCodium'];
-
-  for (const appDir of appDirs) {
-    try {
-      let userFolder = '';
-      const home = os.homedir();
-      if (process.platform === 'darwin') {
-        userFolder = path.join(home, 'Library', 'Application Support', appDir, 'User');
-      } else if (process.platform === 'win32') {
-        const appdata = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-        userFolder = path.join(appdata, appDir, 'User');
-      } else {
-        userFolder = path.join(home, '.config', appDir, 'User');
-      }
-
-      const keybindingsPath = path.join(userFolder, 'keybindings.json');
-      if (fs.existsSync(keybindingsPath)) {
-        const content = fs.readFileSync(keybindingsPath, 'utf8');
-        const cleanContent = content.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
-        const bindings = JSON.parse(cleanContent);
-        if (Array.isArray(bindings)) {
-          const match = bindings.find((b: any) => b.command === 'vibefox.toggleRecording');
-          if (match && typeof match.key === 'string') {
-            return match.key.split('+').map((part: string) => part.trim().charAt(0).toUpperCase() + part.trim().slice(1)).join('+');
-          }
-        }
-      }
-    } catch (err) {
-      // Continue searching in other app dirs
-    }
-  }
-  return defaultKey;
-}
+import { SystemPasteService } from '../services/SystemPasteService';
+import { KeybindingLookupService } from '../services/KeybindingLookupService';
 
 const SECRET_KEY = 'vibefox.licenseKey';
 
@@ -68,21 +31,63 @@ interface VibeConfig {
   vadSilenceMs: number;
   vadMinDurationMs: number;
   vadSilenceThreshold: number;
+  vadAdaptiveThreshold: boolean;
   apiProvider: string;
   customEndpoint: string;
-  llmCorrectionEnabled: boolean;
+  rewriteMode: RewriteMode;
+  /** Evaluation-only: shadow-run Qwen-Plus alongside Haiku, logged to the comparison Output Channel. */
+  rewriteCompareEnabled: boolean;
   llmCorrectionProvider: string;
   llmCorrectionModel: string;
-  llmCorrectionPrompt: string;
   llmCorrectionCustomEndpoint: string;
   developerModeEnabled: boolean;
 }
 
+/** Unified provider result: cloudflare returns server-side rewrite info; others are ASR-only. */
+interface TranscriptionOutcome {
+  text: string;
+  /** Short label for the status bar, e.g. "Qwen3+Haiku" / "Whisper" / "groq". */
+  engineLabel: string;
+  totalMs: number;
+  /** True when the server already ran the rewrite stage (skip client-side correction). */
+  serverRewrote: boolean;
+}
+
+/** Maps server engine ids to compact status-bar labels. */
+function engineLabelOf(engines: { asr: string; rewrite: string }): string {
+  const asrLabels: Record<string, string> = {
+    'qwen3-asr-flash': 'Qwen3',
+    'cf-whisper-large-v3-turbo': 'Whisper',
+  };
+  const rewriteLabels: Record<string, string> = {
+    'claude-haiku-4-5': 'Haiku',
+    'cf-llama-3.1-8b-instruct': 'Llama',
+  };
+  const asr = asrLabels[engines.asr] ?? engines.asr;
+  const rewrite = engines.rewrite === 'none' ? '' : rewriteLabels[engines.rewrite] ?? engines.rewrite;
+  return rewrite ? `${asr}+${rewrite}` : asr;
+}
+
+/** Built-in prompts for the client-side correction fallback (non-cloudflare providers only). */
+const FALLBACK_CLEAN_PROMPT =
+  '你是一个语音输入后处理器，处理程序员的中英混合口述转写文本。只做最小限度清理：修正标点；删除填充词（嗯、啊、那个、就是说、um、uh）；合并口吃重复；按参考词表修复代码标识符拼写与大小写；口述符号词保留原样文字；不翻译、不增删内容、不调整语序。只输出处理后的纯文本，不要任何解释或包裹符号。';
+const FALLBACK_REWRITE_PROMPT =
+  '你是一个语音输入改写器，把程序员的中英混合口述转写整理成清晰指令：删除填充词与口吃重复；处理回溯自我更正（"用A……不对，用B"只保留B）；轻度修复语法与断句但绝不改变技术意图、绝不添加原文没有的内容；按参考词表还原代码标识符精确拼写与大小写；口述符号词保留原样文字；保留中英混排不翻译；输出长度不超过原文。只输出改写后的纯文本，不要任何解释或包裹符号。';
+
 export class VibeController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private autoStopTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastVadTranscript: string = '';
+  /** Session transcript window for cross-segment conditioning; only the last 300 chars are ever sent. */
+  private sessionTranscript: string = '';
   private vadSegmentsTranscribedCount: number = 0;
+  /** Per-recording-session caches: context payload and config are computed ONCE per session, not per VAD segment. */
+  private sessionContext: Promise<ContextPayload> | null = null;
+  private sessionConfig: VibeConfig | null = null;
+  /** Session stats accumulated across VAD segments for the consolidated end-of-session feedback. */
+  private sessionChars = 0;
+  private sessionProcessingMs = 0;
+  private sessionEngineLabel = '';
+  private readonly sessionErrors: string[] = [];
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -94,6 +99,9 @@ export class VibeController implements vscode.Disposable {
     private readonly recorder: AudioRecorderService,
     private readonly api: CloudflareApiService,
     private readonly workspaceContext: WorkspaceContextService,
+    private readonly systemPaste: SystemPasteService,
+    private readonly keybindingLookup: KeybindingLookupService,
+    private readonly rewriteComparison: RewriteComparisonViewer,
   ) {
     // The keybinding's `when: vibefox.recording` (Esc to cancel) depends on this context.
     this.disposables.push(
@@ -112,7 +120,55 @@ export class VibeController implements vscode.Disposable {
       vscode.commands.registerCommand('vibefox.setApiKey', () => this.promptForApiKey()),
       vscode.commands.registerCommand('vibefox.clearApiKey', () => this.clearApiKey()),
       vscode.commands.registerCommand('vibefox.diagnoseAudio', () => this.diagnoseAudio()),
+      vscode.commands.registerCommand('vibefox.selectRewriteMode', () => this.selectRewriteMode()),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('vibefox.rewriteMode')) {
+          this.statusBar.setRewriteMode(this.readConfig().rewriteMode);
+        }
+      }),
     );
+    void this.migrateLegacySettings(context);
+    this.statusBar.setRewriteMode(this.readConfig().rewriteMode);
+  }
+
+  /**
+   * One-time migration of the deprecated llmCorrection* settings to rewriteMode:
+   * an explicit llmCorrectionEnabled=true meant today's 'clean'; explicit false means 'off'.
+   * Unset users get the new default ('clean') automatically — the flagship experience.
+   */
+  private async migrateLegacySettings(context: vscode.ExtensionContext): Promise<void> {
+    const MIGRATION_FLAG = 'vibefox.migratedRewriteModeV2';
+    if (context.globalState.get<boolean>(MIGRATION_FLAG) === true) {
+      return;
+    }
+    const cfg = vscode.workspace.getConfiguration('vibefox');
+    const inspected = cfg.inspect<boolean>('llmCorrectionEnabled');
+    const explicit = inspected?.globalValue ?? inspected?.workspaceValue ?? inspected?.workspaceFolderValue;
+    if (explicit !== undefined) {
+      await cfg.update('rewriteMode', explicit ? 'clean' : 'off', vscode.ConfigurationTarget.Global);
+    }
+    await context.globalState.update(MIGRATION_FLAG, true);
+  }
+
+  /** QuickPick to switch the rewrite mode (also reachable from the status-bar tooltip link). */
+  private async selectRewriteMode(): Promise<void> {
+    const current = this.readConfig().rewriteMode;
+    const items: Array<vscode.QuickPickItem & { mode: RewriteMode }> = [
+      { mode: 'off', label: REWRITE_MODE_LABELS['off'] ?? 'off', description: '原样输出转写结果,不做任何处理' },
+      { mode: 'clean', label: REWRITE_MODE_LABELS['clean'] ?? 'clean', description: '去填充词、修标点、按项目词表校正标识符(推荐)' },
+      { mode: 'rewrite', label: REWRITE_MODE_LABELS['rewrite'] ?? 'rewrite', description: '在清理基础上折叠口误自纠、轻度重组语句' },
+    ];
+    for (const item of items) {
+      if (item.mode === current) {
+        item.picked = true;
+        item.label = `$(check) ${item.label}`;
+      }
+    }
+    const pick = await vscode.window.showQuickPick(items, { title: 'VibeFox 改写模式', placeHolder: '选择语音转写后的文本处理方式' });
+    if (pick !== undefined) {
+      await vscode.workspace.getConfiguration('vibefox').update('rewriteMode', pick.mode, vscode.ConfigurationTarget.Global);
+      this.statusBar.setRewriteMode(pick.mode);
+    }
   }
 
   // ── Command entry points ──────────────────────────────────
@@ -203,8 +259,18 @@ export class VibeController implements vscode.Disposable {
     }
 
     this.audioState.beginRecording();
-    this.lastVadTranscript = '';
+    this.sessionTranscript = '';
     this.vadSegmentsTranscribedCount = 0;
+    this.sessionChars = 0;
+    this.sessionProcessingMs = 0;
+    this.sessionEngineLabel = '';
+    this.sessionErrors.length = 0;
+    // Context payload + config are frozen per session (VAD segments reuse them instead of
+    // re-scanning the workspace and re-reading config on every silence split).
+    this.sessionConfig = config;
+    this.sessionContext = config.contextHint
+      ? this.buildSessionContext()
+      : Promise.resolve({ keywords: [], projectContext: '' });
     this.statusBar.showRecording(() => this.audioState.elapsedSeconds, config.maxRecordSeconds);
 
     try {
@@ -217,7 +283,9 @@ export class VibeController implements vscode.Disposable {
           vadSilenceMs: config.vadSilenceMs,
           vadMinDurationMs: config.vadMinDurationMs,
           vadSilenceThreshold: config.vadSilenceThreshold,
+          vadAdaptiveThreshold: config.vadAdaptiveThreshold,
           onSegment: config.vadEnabled ? (segmentMp3) => void this.handleVadSegment(segmentMp3) : undefined,
+          onSegmentError: (error) => this.sessionErrors.push(error.message),
         },
         (chunk) => this.audioState.appendChunk(chunk),
         (error) => {
@@ -255,7 +323,7 @@ export class VibeController implements vscode.Disposable {
     this.statusBar.showProcessing();
 
     try {
-      const config = this.readConfig();
+      const config = this.sessionConfig ?? this.readConfig();
       let audioBase64 = '';
       if (config.vadEnabled && finalMp3 !== null) {
         audioBase64 = finalMp3.toString('base64');
@@ -263,8 +331,7 @@ export class VibeController implements vscode.Disposable {
         if (!this.audioState.hasAudio()) {
           // In VAD mode, it is normal that the final segment is empty if silence split occurred right before stop.
           if (config.vadEnabled && this.vadSegmentsTranscribedCount > 0) {
-            this.audioState.reset();
-            this.statusBar.showIdle();
+            this.finishSession(config);
             return;
           }
           throw new RecorderStartError(
@@ -274,32 +341,29 @@ export class VibeController implements vscode.Disposable {
         audioBase64 = this.audioState.toBase64();
       }
 
-      const keywords = config.contextHint ? await this.collectKeywords() : [];
-      const text = await this.transcribeWithProvider(config, audioBase64, keywords, this.lastVadTranscript);
-
-      let finalText = text;
-      if (config.llmCorrectionEnabled) {
-        finalText = await this.correctTextWithProvider(config, text, keywords);
-      }
-
-      if (config.developerModeEnabled) {
-        finalText = this.applyDeveloperModeRules(finalText);
-      }
+      const context = await this.currentSessionContext(config);
+      const { finalText, engineLabel, totalMs } = await this.processUtterance(config, audioBase64, context);
 
       if (finalText.trim().length > 0) {
-        this.lastVadTranscript = (this.lastVadTranscript + ' ' + finalText).trim();
-      }
-
-      const outcome = await this.inserter.insert(finalText, config.insertTarget);
-      this.audioState.completeWithText(finalText);
-      this.statusBar.flashResult('ok', `已插入 ${finalText.length} 字`);
-      if (outcome.via === 'clipboard' || outcome.via === 'chat') {
-        void vscode.window.showInformationMessage('VibeFox:转写结果已复制到剪贴板,如果聊天框未自动填入,可直接粘贴(⌘V / Ctrl+V)');
+        this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
+        this.sessionChars += finalText.length;
+        this.sessionProcessingMs += totalMs;
+        this.sessionEngineLabel = engineLabel;
+        const outcome = await this.insertWithPaste(finalText, config.insertTarget);
+        this.audioState.completeWithText(finalText);
+        this.finishSession(config);
+        if (outcome.via === 'clipboard' || outcome.via === 'chat') {
+          void vscode.window.showInformationMessage('VibeFox:转写结果已复制到剪贴板,如果聊天框未自动填入,可直接粘贴(⌘V / Ctrl+V)');
+        }
+      } else {
+        // Trailing segment turned out to be silence — normal end of a VAD session.
+        this.audioState.reset();
+        this.finishSession(config);
       }
     } catch (err) {
       this.audioState.reset();
-      
-      const config = this.readConfig();
+
+      const config = this.sessionConfig ?? this.readConfig();
       if (config.vadEnabled && this.vadSegmentsTranscribedCount > 0) {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (
@@ -308,104 +372,196 @@ export class VibeController implements vscode.Disposable {
           errMsg.includes('empty') ||
           errMsg.includes('502')
         ) {
-          this.statusBar.showIdle();
+          // Silent trailing audio is a normal way for a VAD session to end.
+          this.finishSession(config);
           return;
         }
       }
 
       this.statusBar.flashResult('error', '转写失败');
       await this.reportTranscribeError(err);
+      this.flushSessionErrors();
     }
   }
 
+  /** Session-end feedback: one consolidated stats flash + at most one error summary toast. */
+  private finishSession(config: VibeConfig): void {
+    const segments = this.vadSegmentsTranscribedCount + (this.sessionChars > 0 && !config.vadEnabled ? 1 : 0);
+    if (this.sessionChars > 0) {
+      this.statusBar.flashResultWithStats({
+        chars: this.sessionChars,
+        segments: Math.max(1, segments),
+        engineLabel: this.sessionEngineLabel || config.apiProvider,
+        totalMs: this.sessionProcessingMs / Math.max(1, segments),
+      });
+    } else {
+      this.statusBar.showIdle();
+    }
+    this.flushSessionErrors();
+  }
+
+  /** Reports accumulated per-segment failures as ONE summary toast instead of one per segment. */
+  private flushSessionErrors(): void {
+    if (this.sessionErrors.length === 0) {
+      return;
+    }
+    const unique = [...new Set(this.sessionErrors)];
+    const count = this.sessionErrors.length;
+    this.sessionErrors.length = 0;
+    void vscode.window.showErrorMessage(
+      `VibeFox:本次录音有 ${count} 段转写失败 —— ${unique[0]}${unique.length > 1 ? ` 等 ${unique.length} 类错误` : ''}`,
+    );
+  }
+
+  /** Shared per-utterance pipeline: provider transcription (+server rewrite) → client fallback rewrite → dev-mode rules. */
+  private async processUtterance(
+    config: VibeConfig,
+    audioBase64: string,
+    context: ContextPayload,
+  ): Promise<{ finalText: string; engineLabel: string; totalMs: number }> {
+    const started = Date.now();
+    const outcome = await this.transcribeWithProvider(config, audioBase64, context);
+
+    let finalText = outcome.text;
+    if (!outcome.serverRewrote && config.rewriteMode !== 'off') {
+      finalText = await this.correctTextWithProvider(config, finalText, context.keywords);
+    }
+    if (config.developerModeEnabled) {
+      finalText = this.applyDeveloperModeRules(finalText);
+    }
+    return { finalText, engineLabel: outcome.engineLabel, totalMs: outcome.totalMs || Date.now() - started };
+  }
+
+  /** Insert via the viewer, then honor its needsSystemPaste hint (process spawning is Controller/Service territory). */
+  private async insertWithPaste(text: string, target: InsertTarget): Promise<InsertOutcome> {
+    const outcome = await this.inserter.insert(text, target);
+    if (outcome.via === 'chat' && outcome.needsSystemPaste) {
+      await this.systemPaste.simulatePaste();
+    }
+    return outcome;
+  }
+
+  private async currentSessionContext(config: VibeConfig): Promise<ContextPayload> {
+    if (this.sessionContext !== null) {
+      return this.sessionContext;
+    }
+    return config.contextHint ? this.buildSessionContext() : { keywords: [], projectContext: '' };
+  }
+
   private async handleVadSegment(segmentMp3: Buffer): Promise<void> {
-    const config = this.readConfig();
+    const config = this.sessionConfig ?? this.readConfig();
     try {
-      const keywords = config.contextHint ? await this.collectKeywords() : [];
-      const text = await this.transcribeWithProvider(config, segmentMp3.toString('base64'), keywords, this.lastVadTranscript);
-
-      let finalText = text;
-      if (config.llmCorrectionEnabled) {
-        finalText = await this.correctTextWithProvider(config, text, keywords);
-      }
-
-      if (config.developerModeEnabled) {
-        finalText = this.applyDeveloperModeRules(finalText);
-      }
+      const context = await this.currentSessionContext(config);
+      const { finalText, engineLabel, totalMs } = await this.processUtterance(config, segmentMp3.toString('base64'), context);
 
       if (finalText.trim().length > 0) {
-        this.lastVadTranscript = (this.lastVadTranscript + ' ' + finalText).trim();
+        this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
         this.vadSegmentsTranscribedCount++;
-        void vscode.window.showInformationMessage(`VibeFox 识别成功: [${finalText}]`);
-        await this.inserter.insert(finalText, config.insertTarget);
+        this.sessionChars += finalText.length;
+        this.sessionProcessingMs += totalMs;
+        this.sessionEngineLabel = engineLabel;
+        // No per-segment toast — progress lives in the status bar; one consolidated summary at session end.
+        await this.insertWithPaste(finalText, config.insertTarget);
       }
     } catch (err) {
       console.error('[VibeFox VAD Segment ASR Error]', err);
-      void vscode.window.showErrorMessage(`VibeFox 语音转写错误: ${err instanceof Error ? err.message : String(err)}`);
+      this.sessionErrors.push(err instanceof Error ? err.message : String(err));
     }
   }
 
   private async transcribeWithProvider(
     config: VibeConfig,
     audioBase64: string,
-    keywords: string[],
-    previousTranscript?: string
-  ): Promise<string> {
+    context: ContextPayload,
+  ): Promise<TranscriptionOutcome> {
     const provider = config.apiProvider;
+    const previousTranscript = this.sessionTranscript.slice(-300) || undefined;
+    const keywords = context.keywords;
+    const started = Date.now();
+
     if (provider === 'cloudflare') {
       const licenseKey = await this.secrets.get(SECRET_KEY);
       if (licenseKey === undefined) {
         throw new ApiError('unauthorized', 'License key 已被清除,请重新设置');
       }
-      const useLlmCorrection = config.llmCorrectionEnabled && (config.llmCorrectionProvider === 'auto' || config.llmCorrectionProvider === 'cloudflare');
       const result = await this.api.transcribe(config.endpoint, licenseKey, {
         audio: audioBase64,
         language: config.language,
         keywords,
+        projectContext: context.projectContext || undefined,
         previousTranscript,
-        llmCorrect: useLlmCorrection,
-        llmPrompt: config.llmCorrectionPrompt,
-        llmModel: config.llmCorrectionModel
+        rewriteMode: config.rewriteMode,
+        compareRewrite: config.rewriteCompareEnabled,
       });
-      return result.text;
-    } else if (provider === 'groq') {
+      if (config.rewriteCompareEnabled && result.rewriteComparison) {
+        this.rewriteComparison.log({
+          rawText: result.rawText,
+          primaryEngine: result.engines.rewrite,
+          primaryText: result.finalText,
+          primaryMs: result.timings.rewrite_ms,
+          qwenText: result.rewriteComparison.qwenText,
+          qwenMs: result.rewriteComparison.qwenMs,
+          qwenError: result.rewriteComparison.qwenError,
+        });
+      }
+      return {
+        text: result.finalText,
+        engineLabel: engineLabelOf(result.engines),
+        totalMs: result.timings.total_ms,
+        // The Worker owns the whole rewrite chain (including its fallbacks) on this path.
+        serverRewrote: true,
+      };
+    }
+
+    let text: string;
+    if (provider === 'groq') {
       const apiKey = await this.secrets.get('vibefox.groqKey');
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', 'Groq API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      return this.api.transcribeGroq(apiKey, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeGroq(apiKey, audioBase64, config.language, keywords, previousTranscript);
     } else if (provider === 'openai') {
       const apiKey = await this.secrets.get('vibefox.openaiKey');
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', 'OpenAI API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      return this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords, previousTranscript);
     } else if (provider === 'aliyun') {
       const apiKey = await this.secrets.get('vibefox.aliyunKey');
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', '阿里云 API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      return this.api.transcribeAliyun(config.endpoint, apiKey, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeAliyun(config.endpoint, apiKey, audioBase64, config.language, keywords, previousTranscript);
     } else if (provider === 'custom') {
       if (!config.customEndpoint) {
         throw new Error('自定义服务地址 (vibefox.customEndpoint) 未配置');
       }
-      return this.api.transcribeCustom(config.customEndpoint, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeCustom(config.customEndpoint, audioBase64, config.language, keywords, previousTranscript);
+    } else {
+      throw new Error(`不支持的 API Provider: ${provider}`);
     }
-    throw new Error(`不支持的 API Provider: ${provider}`);
+    return { text, engineLabel: provider, totalMs: Date.now() - started, serverRewrote: false };
   }
 
+  /**
+   * Client-side rewrite for non-cloudflare providers (the Worker path rewrites server-side).
+   * Prompts are built-in per rewriteMode; a legacy llmCorrectionProvider of 'cloudflare' falls
+   * back to the active provider's chat endpoint instead of silently skipping correction.
+   */
   private async correctTextWithProvider(
     config: VibeConfig,
     text: string,
     keywords: string[]
   ): Promise<string> {
-    const provider = config.llmCorrectionProvider === 'auto' ? config.apiProvider : config.llmCorrectionProvider;
-
-    // If both transcription and correction use cloudflare, it was already corrected server-side, so skip.
-    if (provider === 'cloudflare' && config.apiProvider === 'cloudflare') {
-      return text;
+    let provider = config.llmCorrectionProvider === 'auto' ? config.apiProvider : config.llmCorrectionProvider;
+    if (provider === 'cloudflare') {
+      if (config.apiProvider === 'cloudflare') {
+        return text;
+      }
+      provider = config.apiProvider;
     }
+
+    const systemPrompt = config.rewriteMode === 'rewrite' ? FALLBACK_REWRITE_PROMPT : FALLBACK_CLEAN_PROMPT;
 
     if (provider === 'groq') {
       const apiKey = await this.secrets.get('vibefox.groqKey');
@@ -413,29 +569,29 @@ export class VibeController implements vscode.Disposable {
         throw new Error('Groq API Key 未设置，无法进行 LLM 后处理');
       }
       const model = config.llmCorrectionModel || 'llama-3.3-70b-versatile';
-      return this.api.llmCorrectOpenAICompatible('https://api.groq.com/openai/v1', apiKey, model, text, keywords, config.llmCorrectionPrompt);
+      return this.api.llmCorrectOpenAICompatible('https://api.groq.com/openai/v1', apiKey, model, text, keywords, systemPrompt);
     } else if (provider === 'openai') {
       const apiKey = await this.secrets.get('vibefox.openaiKey');
       if (apiKey === undefined) {
         throw new Error('OpenAI API Key 未设置，无法进行 LLM 后处理');
       }
       const model = config.llmCorrectionModel || 'gpt-4o-mini';
-      return this.api.llmCorrectOpenAICompatible('https://api.openai.com/v1', apiKey, model, text, keywords, config.llmCorrectionPrompt);
+      return this.api.llmCorrectOpenAICompatible('https://api.openai.com/v1', apiKey, model, text, keywords, systemPrompt);
     } else if (provider === 'aliyun') {
       const apiKey = await this.secrets.get('vibefox.aliyunKey');
       if (apiKey === undefined) {
         throw new Error('阿里云 API Key 未设置，无法进行 LLM 后处理');
       }
       const model = config.llmCorrectionModel || 'qwen-turbo';
-      return this.api.llmCorrectOpenAICompatible('https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey, model, text, keywords, config.llmCorrectionPrompt);
+      return this.api.llmCorrectOpenAICompatible('https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey, model, text, keywords, systemPrompt);
     } else if (provider === 'custom') {
       const endpoint = config.llmCorrectionCustomEndpoint || config.customEndpoint;
       if (!endpoint) {
         throw new Error('自定义 LLM 后处理端点未配置');
       }
-      return this.api.llmCorrectOpenAICompatible(endpoint, '', config.llmCorrectionModel, text, keywords, config.llmCorrectionPrompt);
+      return this.api.llmCorrectOpenAICompatible(endpoint, '', config.llmCorrectionModel, text, keywords, systemPrompt);
     }
-    
+
     return text;
   }
 
@@ -454,18 +610,18 @@ export class VibeController implements vscode.Disposable {
       terminal.show();
       terminal.sendText(installCommand, true);
       void vscode.window.showInformationMessage(
-        `VibeFox:正在终端执行「${installCommand}」,完成后再按 ${getActiveKeybinding()} 即可录音`,
+        `VibeFox:正在终端执行「${installCommand}」,完成后再按 ${this.keybindingLookup.getActiveKeybinding()} 即可录音`,
       );
     } else if (pick === '手动指定路径') {
       void vscode.commands.executeCommand('workbench.action.openSettings', 'vibefox.ffmpegPath');
     }
   }
 
-  /** Viewer takes a text snapshot → Model extracts keywords. */
-  private async collectKeywords(): Promise<string[]> {
+  /** Viewer takes a text snapshot → Model builds the two-tier payload. Called ONCE per recording session. */
+  private async buildSessionContext(): Promise<ContextPayload> {
     const snapshot = await this.editorContext.snapshot();
     const workspaceKeywords = this.workspaceContext.getWorkspaceKeywords();
-    return this.vocabulary.extractKeywords(snapshot, workspaceKeywords);
+    return this.vocabulary.buildPayload(snapshot, workspaceKeywords);
   }
 
   // ── Auth lifecycle ────────────────────────────────────────
@@ -572,6 +728,9 @@ export class VibeController implements vscode.Disposable {
         case 'payload-too-large':
           void vscode.window.showErrorMessage('VibeFox:录音过长被服务端拒收,请缩短后重试(或调低 vibefox.maxRecordSeconds)');
           return;
+        case 'rate-limited':
+          void vscode.window.showErrorMessage('VibeFox:请求过于频繁,已被服务端限流,请稍候数十秒再试');
+          return;
         case 'timeout':
         case 'network':
           void vscode.window.showErrorMessage(`VibeFox:${err.message},检查网络与 vibefox.endpoint`);
@@ -619,15 +778,13 @@ export class VibeController implements vscode.Disposable {
       vadSilenceMs: getWithFallback<number>('vadSilenceMs', 1200),
       vadMinDurationMs: getWithFallback<number>('vadMinDurationMs', 3000),
       vadSilenceThreshold: getWithFallback<number>('vadSilenceThreshold', 350),
+      vadAdaptiveThreshold: getWithFallback<boolean>('vadAdaptiveThreshold', true),
       apiProvider: getWithFallback<string>('apiProvider', 'cloudflare'),
       customEndpoint: getWithFallback<string>('customEndpoint', '').trim(),
-      llmCorrectionEnabled: getWithFallback<boolean>('llmCorrectionEnabled', false),
+      rewriteMode: getWithFallback<RewriteMode>('rewriteMode', 'clean'),
+      rewriteCompareEnabled: getWithFallback<boolean>('rewriteCompareEnabled', false),
       llmCorrectionProvider: getWithFallback<string>('llmCorrectionProvider', 'auto'),
       llmCorrectionModel: getWithFallback<string>('llmCorrectionModel', ''),
-      llmCorrectionPrompt: getWithFallback<string>(
-        'llmCorrectionPrompt',
-        '你是一个编程语音转文字后处理器。用户用中文口述编程意图。请修正转写文本中的错误标点符号（在语气停顿处补充逗号、句号），修复代码标识符拼写错误（参考词表中的名字进行匹配替换，保证拼写和大小写完全一致），并去除口语填充词（如：啊、嗯、那个、就是说）。不要改变用户原意，直接输出修正后的文本，不要带有任何解释、问候或Markdown包裹符号。'
-      ),
       llmCorrectionCustomEndpoint: getWithFallback<string>('llmCorrectionCustomEndpoint', '').trim(),
       developerModeEnabled: getWithFallback<boolean>('developerModeEnabled', true),
     };
@@ -644,7 +801,7 @@ export class VibeController implements vscode.Disposable {
     let result = text;
 
     // 1. File extensions: "dot ts" / "dian ts" -> ".ts" (case-insensitive, optional spaces)
-    result = result.replace(/\b(?:dot|点|\\.)\s*(ts|js|json|py|css|html|md|tsx|jsx|sh|yaml|yml|rs|go|c|cpp|h|txt|log)\b/gi, (match, ext) => {
+    result = result.replace(/\b(?:dot|点|\.)\s*(ts|js|json|py|css|html|md|tsx|jsx|sh|yaml|yml|rs|go|c|cpp|h|txt|log)\b/gi, (match, ext) => {
       return `.${ext.toLowerCase()}`;
     });
 
@@ -726,7 +883,6 @@ export class VibeController implements vscode.Disposable {
 
   private async diagnoseAudio(): Promise<void> {
     const config = this.readConfig();
-    const device = config.audioDevice || ':default';
     const pick = await vscode.window.showInformationMessage(
       `VibeFox 将开始 3 秒钟的麦克风测试，请准备好对着麦克风持续大声说话。是否开始？`,
       '开始测试',
@@ -735,60 +891,15 @@ export class VibeController implements vscode.Disposable {
     if (pick !== '开始测试') {
       return;
     }
-    
+
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.text = '$(mic) 正在测试中，请持续大声说话...';
     statusBarItem.show();
-    
+
     try {
-      const binary = await this.recorder.ensureFfmpeg(config.ffmpegPath);
-      const args = [
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-nostdin',
-        '-f', 'avfoundation',
-        '-i', device,
-        '-t', '3',
-        '-ac', '1',
-        '-ar', '16000',
-        '-f', 's16le',
-        'pipe:1'
-      ];
-      
-      const proc = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      const chunks: Buffer[] = [];
-      proc.stdout.on('data', (chunk: Buffer) => {
-        chunks.push(chunk);
-      });
-      
-      let stderr = '';
-      proc.stderr.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-      
-      await new Promise<void>((resolve, reject) => {
-        proc.on('close', (code) => {
-          if (code !== 0 && code !== 255) {
-            reject(new Error(stderr.trim() || `exit code ${code}`));
-          } else {
-            resolve();
-          }
-        });
-        proc.on('error', (err) => reject(err));
-      });
-      
-      const buffer = Buffer.concat(chunks);
-      if (buffer.length === 0) {
-        throw new Error('未捕获到任何音频数据');
-      }
-      
-      let sum = 0;
-      const numSamples = Math.floor(buffer.length / 2);
-      for (let i = 0; i < numSamples * 2; i += 2) {
-        sum += Math.abs(buffer.readInt16LE(i));
-      }
-      const average = Math.round(sum / numSamples);
-      
+      // Low-level capture lives in the recorder service (cross-platform args included).
+      const { averageAmplitude: average } = await this.recorder.captureSample(config.ffmpegPath, config.audioDevice, 3);
+
       if (average < 100) {
         await vscode.window.showWarningMessage(
           `诊断结果：麦克风输入信号极弱（平均音量仅为 ${average}，近乎静音）。\n` +

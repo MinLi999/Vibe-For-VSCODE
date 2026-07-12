@@ -6,7 +6,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
 
 export class FfmpegNotFoundError extends Error {
   /** `installCommand` is directly runnable in the integrated terminal (one-click install). */
@@ -16,6 +15,9 @@ export class FfmpegNotFoundError extends Error {
 }
 
 export class RecorderStartError extends Error {}
+
+/** MP3 compression failure of a recorded PCM segment (surfaced to the Controller for UI). */
+export class CompressionError extends Error {}
 
 export interface RecorderOptions {
   /** Empty string = use `ffmpeg` from PATH. */
@@ -28,8 +30,13 @@ export interface RecorderOptions {
   vadEnabled?: boolean;
   vadSilenceMs?: number;
   vadMinDurationMs?: number;
+  /** Floor (adaptive mode) or fixed value (adaptive off) for the silence amplitude threshold. */
   vadSilenceThreshold?: number;
+  /** Noise-floor self-calibrating threshold; falls back to the fixed vadSilenceThreshold when false. */
+  vadAdaptiveThreshold?: boolean;
   onSegment?: (segmentMp3: Buffer) => void;
+  /** Mid-session segment failures (e.g. compression); no UI here — the Controller decides how to surface them. */
+  onSegmentError?: (error: Error) => void;
 }
 
 /** Exact runnable install command per platform (executed verbatim by the one-click install terminal). */
@@ -98,6 +105,13 @@ function probeFfmpeg(binary: string): Promise<boolean> {
   });
 }
 
+/** Upper clamp for the adaptive threshold (matches the vadSilenceThreshold setting's max). */
+const ADAPTIVE_THRESHOLD_MAX = 2000;
+/** effectiveThreshold = clamp(noiseFloor * this factor, configured floor, max). */
+const NOISE_FLOOR_FACTOR = 2.5;
+/** Initial calibration window: the minimum chunk amplitude within this window seeds the noise floor. */
+const CALIBRATION_WINDOW_MS = 500;
+
 export class AudioRecorderService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private detectedOk: string | null = null; // Caches the resolved binary path once successfully probed.
@@ -106,6 +120,10 @@ export class AudioRecorderService {
   private silentTimeMs = 0;
   private lastFfmpegPath = '';
   private activeVadThreshold = 350;
+  private adaptiveEnabled = true;
+  private noiseFloor: number | null = null;
+  private observedMs = 0;
+  private onSegmentError: ((error: Error) => void) | undefined;
 
   get isRecording(): boolean {
     return this.child !== null;
@@ -156,6 +174,10 @@ export class AudioRecorderService {
     this.totalPcmBytes = 0;
     this.silentTimeMs = 0;
     this.activeVadThreshold = options.vadSilenceThreshold ?? 350;
+    this.adaptiveEnabled = options.vadAdaptiveThreshold ?? true;
+    this.noiseFloor = null;
+    this.observedMs = 0;
+    this.onSegmentError = options.onSegmentError;
 
     const isVad = options.vadEnabled && options.onSegment;
 
@@ -260,26 +282,16 @@ export class AudioRecorderService {
       child.kill('SIGTERM');
     });
 
-    // If we have remaining PCM (longer than 200ms), check if it is loud enough to contain speech (silence threshold = 350)
+    // Send any trailing PCM ≥200ms to the ASR — even quiet audio may hold real final words
+    // (amplitude-based discarding here used to eat softly-spoken endings); silence is the
+    // ASR's call, and the Controller silently skips empty transcriptions.
     if (remainingPcm && remainingPcm.byteLength > 3200 * 2) {
-      let sum = 0;
-      const numSamples = Math.floor(remainingPcm.byteLength / 2);
-      for (let i = 0; i < numSamples * 2; i += 2) {
-        sum += Math.abs(remainingPcm.readInt16LE(i));
-      }
-      const average = sum / numSamples;
-
-      // Discard silent trailing segments to avoid Whisper hallucinations on background noise/clicks
-      if (average < this.activeVadThreshold) {
-        return null;
-      }
-
       try {
         const mp3 = await this.compressToMp3(remainingPcm, this.lastFfmpegPath);
         return mp3;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        void vscode.window.showErrorMessage(`VibeFox 压缩音频失败(Stop): ${msg}`);
+        this.onSegmentError?.(new CompressionError(`压缩音频失败(Stop): ${msg}`));
         return null;
       }
     }
@@ -316,7 +328,7 @@ export class AudioRecorderService {
       const average = sum / numSamples;
       const durationMs = chunk.byteLength / 32;
 
-      const silenceThreshold = this.activeVadThreshold;
+      const silenceThreshold = this.updateAdaptiveThreshold(average, durationMs);
       if (average < silenceThreshold) {
         this.silentTimeMs += durationMs;
       } else {
@@ -347,13 +359,81 @@ export class AudioRecorderService {
     }
   }
 
+  /**
+   * Noise-floor tracking silence threshold: quiet mics under-trigger and loud rooms
+   * over-trigger a fixed threshold, so the floor is seeded from the first 500ms minimum
+   * and then tracks fast-down / slow-up (floor = min(chunkAvg, floor * 1.02)).
+   * The configured vadSilenceThreshold acts as the lower clamp.
+   */
+  private updateAdaptiveThreshold(chunkAverage: number, durationMs: number): number {
+    if (!this.adaptiveEnabled) {
+      return this.activeVadThreshold;
+    }
+    this.observedMs += durationMs;
+    if (this.noiseFloor === null || this.observedMs <= CALIBRATION_WINDOW_MS) {
+      this.noiseFloor = this.noiseFloor === null ? chunkAverage : Math.min(this.noiseFloor, chunkAverage);
+    } else {
+      this.noiseFloor = Math.min(chunkAverage, this.noiseFloor * 1.02);
+    }
+    return Math.min(Math.max(this.noiseFloor * NOISE_FLOOR_FACTOR, this.activeVadThreshold), ADAPTIVE_THRESHOLD_MAX);
+  }
+
+  /**
+   * Cross-platform microphone sample for the diagnose command: records `seconds` of PCM
+   * via the same platform capture args as real recording and reports the average amplitude.
+   */
+  async captureSample(ffmpegPath: string, audioDevice: string, seconds: number): Promise<{ averageAmplitude: number }> {
+    const binary = await this.ensureFfmpeg(ffmpegPath);
+    const args = [
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-nostdin',
+      ...captureArgs(audioDevice),
+      '-t', String(seconds),
+      '-ac', '1',
+      '-ar', '16000',
+      '-f', 's16le',
+      'pipe:1',
+    ];
+
+    const proc = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const chunks: Buffer[] = [];
+    let stderr = '';
+    proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      proc.on('close', (code) => {
+        if (code !== 0 && code !== 255) {
+          reject(new RecorderStartError(stderr.trim() || `exit code ${code}`));
+        } else {
+          resolve();
+        }
+      });
+      proc.on('error', (err) => reject(err));
+    });
+
+    const buffer = Buffer.concat(chunks);
+    if (buffer.length === 0) {
+      throw new RecorderStartError('未捕获到任何音频数据');
+    }
+    let sum = 0;
+    const numSamples = Math.floor(buffer.length / 2);
+    for (let i = 0; i < numSamples * 2; i += 2) {
+      sum += Math.abs(buffer.readInt16LE(i));
+    }
+    return { averageAmplitude: Math.round(sum / numSamples) };
+  }
+
   private async compressAndEmit(pcm: Buffer, onSegment: (mp3: Buffer) => void): Promise<void> {
     try {
       const mp3 = await this.compressToMp3(pcm, this.lastFfmpegPath);
       onSegment(mp3);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      void vscode.window.showErrorMessage(`VibeFox 压缩分段失败(VAD): ${msg}`);
+      this.onSegmentError?.(new CompressionError(`压缩分段失败(VAD): ${msg}`));
     }
   }
 
@@ -367,6 +447,7 @@ export class AudioRecorderService {
         '-ar', '16000',
         '-ac', '1',
         '-i', 'pipe:0',
+        '-b:a', '64k',
         '-f', 'mp3',
         'pipe:1',
       ];
