@@ -1,6 +1,7 @@
 import { authenticate } from './auth';
+import { enforceRateLimit } from './ratelimit';
 import { handleTranscribe, HttpError } from './transcribe';
-import type { Env, ErrorResponseBody } from './types';
+import type { Env, ErrorResponseBody, Tier } from './types';
 
 /** Unified CORS headers (the extension calls via Node fetch and isn't actually CORS-bound; kept for a future web client). */
 const CORS_HEADERS: Record<string, string> = {
@@ -44,9 +45,16 @@ export default {
         return errorResponse(auth.status, auth.message);
       }
 
-      const result = await handleTranscribe(request, env);
+      const tier: Tier = auth.metadata?.plan === 'pro' ? 'quality' : 'free';
+      await enforceRateLimit(env, tier, auth.key);
+
+      const result = await handleTranscribe(request, env, auth);
+      // Structured, content-free log line: engines/timings/fallback only, never transcript text.
       console.log(
-        `transcribe ok owner=${auth.metadata?.owner ?? 'unknown'} chars=${result.text.length} ms=${result.duration_ms}`,
+        `transcribe ok owner=${auth.metadata?.owner ?? 'unknown'} tier=${result.tier}` +
+          ` asr=${result.engines.asr} rewrite=${result.engines.rewrite}` +
+          ` chars=${result.finalText.length} asr_ms=${result.timings.asr_ms} rewrite_ms=${result.timings.rewrite_ms}` +
+          (result.fallback ? ` fallback=${JSON.stringify(result.fallback)}` : ''),
       );
       return json(result, 200);
     } catch (err) {

@@ -30,6 +30,14 @@
         "title": "VibeFox: Set License Key / 设置授权密钥"
       },
       {
+        "command": "vibefox.clearLicenseKey",
+        "title": "VibeFox: Clear License Key / 清除授权密钥"
+      },
+      {
+        "command": "vibefox.selectRewriteMode",
+        "title": "VibeFox: Select Rewrite Mode / 选择改写模式"
+      },
+      {
         "command": "vibefox.setApiKey",
         "title": "VibeFox: Set API Key / 设置 API 密钥"
       },
@@ -144,39 +152,51 @@
           "default": 350,
           "minimum": 50,
           "maximum": 2000,
-          "markdownDescription": "Volume amplitude threshold (16-bit PCM absolute average) below which audio is treated as silent. Default 350. Lower it (e.g. 150-200) for quiet microphones."
+          "markdownDescription": "Volume amplitude threshold (16-bit PCM absolute average) below which audio is treated as silent. With `#vibefox.vadAdaptiveThreshold#` enabled this acts as the lower clamp; otherwise it is used as-is. Lower it (e.g. 150-200) for quiet microphones."
+        },
+        "vibefox.vadAdaptiveThreshold": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Self-calibrate the silence threshold from the ambient noise floor (first 500ms minimum, then fast-down/slow-up tracking). Fixes under-triggering on quiet microphones and over-triggering in noisy rooms. Disable to use the fixed `#vibefox.vadSilenceThreshold#`."
+        },
+        "vibefox.rewriteMode": {
+          "type": "string",
+          "enum": ["off", "clean", "rewrite"],
+          "default": "clean",
+          "enumDescriptions": [
+            "原样转写:不做任何后处理",
+            "智能清理:去填充词、修标点、按项目词表校正代码标识符拼写与大小写(推荐)",
+            "深度润色:在清理基础上折叠口误自纠(\"用A…不对,用B\"只留B)、合并重复、轻度重组语句,不改变意图"
+          ],
+          "markdownDescription": "语音转写后的文本处理方式。Cloudflare(订阅)链路由服务端 Claude Haiku 执行;其他 provider 由客户端调用对应 LLM 执行。"
+        },
+        "vibefox.rewriteCompareEnabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**评估用**:同时用 Qwen-Plus 跑一份改写副本与 Haiku 对比,结果写入「VibeFox: Rewrite Comparison (Haiku vs Qwen)」输出面板,不影响实际插入的文本。仅质量档(pro license)生效;会增加请求延迟(等待较慢的一方)与 DashScope 调用成本,评估结束后建议关闭。"
         },
         "vibefox.llmCorrectionEnabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Enable LLM post-processing correction on transcribed text to add proper punctuation, fix identifier spellings based on vocabulary hints, and remove verbal fillers."
+          "markdownDeprecationMessage": "已废弃:请改用 `#vibefox.rewriteMode#`(true 对应 `clean`,false 对应 `off`)。首次启动时会自动迁移。"
         },
         "vibefox.llmCorrectionProvider": {
           "type": "string",
           "enum": ["auto", "groq", "openai", "aliyun", "custom"],
           "default": "auto",
-          "enumDescriptions": [
-            "Use the active API provider",
-            "Use Groq LLM",
-            "Use OpenAI LLM",
-            "Use Aliyun Qwen LLM",
-            "Use a custom chat completion URL"
-          ],
-          "markdownDescription": "The LLM provider to use for text correction. If auto, maps to the active transcription provider."
+          "markdownDeprecationMessage": "Legacy:仅对非 Cloudflare provider 的客户端改写链路生效;Cloudflare 链路的改写由服务端执行,此设置无效。",
+          "markdownDescription": "The LLM provider for client-side rewrite on non-Cloudflare providers. If auto, maps to the active transcription provider."
         },
         "vibefox.llmCorrectionModel": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Optional model name override for LLM correction (e.g. llama-3.3-70b-versatile, gpt-4o-mini). If empty, standard default model is selected based on the provider."
-        },
-        "vibefox.llmCorrectionPrompt": {
-          "type": "string",
-          "default": "你是一个编程语音转文字后处理器。用户用中文口述编程意图。请修正转写文本中的错误标点符号（在语气停顿处补充逗号、句号），修复代码标识符拼写错误（参考词表中的名字进行匹配替换，保证拼写和大小写完全一致），并去除口语填充词（如：啊、嗯、那个、就是说）。不要改变用户原意，直接输出修正后的文本，不要带有任何解释、问候或Markdown包裹符号。",
-          "markdownDescription": "The system prompt sent to the LLM to guide text correction."
+          "markdownDeprecationMessage": "Legacy:仅对非 Cloudflare provider 的客户端改写链路生效。",
+          "markdownDescription": "Optional model name override for client-side rewrite (e.g. llama-3.3-70b-versatile, gpt-4o-mini)."
         },
         "vibefox.llmCorrectionCustomEndpoint": {
           "type": "string",
           "default": "",
+          "markdownDeprecationMessage": "Legacy:仅对非 Cloudflare provider 的客户端改写链路生效。",
           "markdownDescription": "The custom chat completions endpoint URL when llmCorrectionProvider is set to custom."
         },
         "vibefox.developerModeEnabled": {
