@@ -170,11 +170,6 @@
           ],
           "markdownDescription": "语音转写后的文本处理方式。Cloudflare(订阅)链路由服务端 Claude Haiku 执行;其他 provider 由客户端调用对应 LLM 执行。"
         },
-        "vibefox.rewriteCompareEnabled": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "**评估用**:同时用备选引擎(Claude Haiku)跑一份改写副本与主引擎(Qwen-Plus)对比,结果写入「VibeFox: Rewrite Comparison」输出面板,不影响实际插入的文本。仅质量档(pro license)生效;会增加对比引擎的调用成本,评估结束后建议关闭。"
-        },
         "vibefox.chineseVariant": {
           "type": "string",
           "enum": ["simplified-cn", "simplified-sg-my", "traditional-tw", "traditional-hk-mo"],

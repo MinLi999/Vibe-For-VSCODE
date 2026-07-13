@@ -25,10 +25,10 @@
   ],
 
   // 区域感知路由:亚太走新加坡区,其余走美国区(engines/qwenAsr.ts resolveQwenRegion)。
-  // 阿里云 DashScope key 按区域隔离、不能跨区使用,因此需要两把独立的 key:
+  // ASR + 改写(qwen-plus)全部走阿里云 DashScope,key 按区域隔离、不能跨区使用,需要两把:
   // `npx wrangler secret put DASHSCOPE_API_KEY_APAC`(新加坡区 console 生成)
   // `npx wrangler secret put DASHSCOPE_API_KEY_US`(美国/Virginia 区 console 生成)
-  // 以及 `npx wrangler secret put ANTHROPIC_API_KEY`。密钥值绝不进本文件(红线 2)。
+  // 密钥值绝不进本文件(红线 2)。ANTHROPIC_API_KEY 已不再使用,可 `wrangler secret delete`。
   "vars": {
     "DASHSCOPE_BASE_URL_APAC": "https://dashscope-intl.aliyuncs.com",
     "DASHSCOPE_BASE_URL_US": "https://dashscope-us.aliyuncs.com",

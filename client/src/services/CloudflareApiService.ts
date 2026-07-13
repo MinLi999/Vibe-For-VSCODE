@@ -19,8 +19,6 @@ export interface TranscribeRequest {
   projectContext?: string;
   previousTranscript?: string;
   rewriteMode: RewriteMode;
-  /** Evaluation-only: shadow-run the alternative rewrite engine (Haiku) for side-by-side comparison. */
-  compareRewrite?: boolean;
   chineseVariant?: ChineseVariant;
   regionPreference?: RegionPreference;
 }
@@ -34,8 +32,6 @@ export interface TranscribeResponse {
   engines: { asr: string; rewrite: string };
   timings: { asr_ms: number; rewrite_ms: number; total_ms: number };
   fallback?: { asr?: string; rewrite?: string };
-  /** Present only when the request set compareRewrite:true — the shadow (alternative) engine's output. */
-  rewriteComparison?: { altEngine?: string; altText?: string; altMs?: number; altError?: string };
 }
 
 export type ApiErrorKind =
@@ -110,7 +106,6 @@ export class CloudflareApiService {
       timings?: { asr_ms?: number; rewrite_ms?: number; total_ms?: number };
       duration_ms?: number;
       fallback?: { asr?: string; rewrite?: string };
-      rewriteComparison?: { altEngine?: string; altText?: string; altMs?: number; altError?: string };
     };
 
     if (typeof body.finalText === 'string' && typeof body.rawText === 'string') {
@@ -124,7 +119,6 @@ export class CloudflareApiService {
           total_ms: body.timings?.total_ms ?? body.duration_ms ?? 0,
         },
         ...(body.fallback ? { fallback: body.fallback } : {}),
-        ...(body.rewriteComparison ? { rewriteComparison: body.rewriteComparison } : {}),
       };
     }
     // v1 server (pre-upgrade Worker): only `text` — map into the v2 shape.
