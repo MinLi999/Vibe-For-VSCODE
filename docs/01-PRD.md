@@ -4,8 +4,8 @@
 ## 1. 业务目标
 
 为使用 LLM 聊天扩展(Claude Code、Cline、Copilot Chat)的开发者提供**语音输入**:按下热键说需求(中文优先,中英混杂夹带代码词汇),松手后 2~4 秒内把**清理/润色后的**转写文本插入聊天框/光标处/终端/剪贴板。核心卖点(对标 Wispr Flow / Aqua Voice,差异化=中英混杂编程口述唯一深度优化):
-- **双引擎质量档**:订阅链路 = **Qwen3-ASR**(2026 中英 code-switching SOTA 梯队,context enhancement 通道可吃整段项目上下文)+ **Claude Haiku 4.5** 改写(去填充词/口误自纠折叠/标识符保真);免费档 = CF Whisper + llama,自动降级兜底。
-- **项目级上下文**:两级载荷 —— 排序词表(40)偏置 + 自由文本 projectContext(≤2000 字符,当前文件符号/工作区高频标识符/相关文件,保留原始大小写),专有名词不被音译。
+- **双引擎质量档**:订阅链路 = **Qwen3-ASR**(2026 中英 code-switching SOTA 梯队,纯音频输入,不做任何文本级偏置注入)+ **Claude Haiku 4.5** 改写(去填充词/口误自纠折叠/标识符保真,项目词表与背景在此阶段介入);免费档 = CF Whisper + llama,自动降级兜底。
+- **项目级上下文**:两级载荷 —— 排序词表(40,喂给 Whisper 的 initial_prompt 偏置 + 改写阶段的标识符校正)+ 自由文本 projectContext(≤2000 字符,当前文件符号/工作区高频标识符/相关文件,保留原始大小写,喂给改写阶段辅助理解术语),专有名词靠改写阶段的词表校正还原,不做 ASR 端偏置。
 - **改写三档**:`rewriteMode` = off / clean(默认,去填充词修标点校标识符)/ rewrite(折叠"用A…不对,用B"式口误自纠、轻度重组,不改意图)。
 - **低延迟**:语言锁 `zh` 绕过自动检测;区域感知路由(亚太→DashScope 新加坡,其余→美国区);短文本跳过改写;质量档端到端 2.2~4.0s。
 - **商业化就绪**:License Key 鉴权(Cloudflare KV,`plan:"pro"` 元数据路由质量档),按 key 限流,闭源分发 .vsix。
@@ -28,7 +28,7 @@
 ### 模块 B:上下文两级载荷
 - 业务逻辑:每**录音会话**构建一次(VAD 分段复用,不重复扫描):
   1. `keywords[]`(≤40,排序:活动文档 top20 → 工作区全局 top15 → 其他标签页 → 文件名词干)——供 Whisper 兜底路径的 `initial_prompt` 偏置(800 字节预算);
-  2. `projectContext`(≤2000 字符自由文本:项目名/当前文件+语言/当前文件符号 top30/工作区高频标识符 top100/相关文件,保留原始大小写)——供 Qwen3-ASR context enhancement 通道(约 10k token 上限,无截断博弈)。
+  2. `projectContext`(≤2000 字符自由文本:项目名/当前文件+语言/当前文件符号 top30/工作区高频标识符 top100/相关文件,保留原始大小写)——**不发给 ASR**(阿里云官方文档未证实同步接口支持文本级偏置,早期"system 消息"实现曾导致该文本被模型当成转写内容读出来,已改为纯音频请求),改喂给改写阶段的用户消息,辅助 Haiku/Qwen-Plus 理解项目术语并校正标识符拼写。
 - 工作区全局词频:`WorkspaceContextService` 后台扫描 ≤300 个源码文件(>256KB 跳过),保存/删除增量更新。
 - 分层影响面:
   - View:`EditorContextViewer`(只读文本快照 + activeFilePath/languageId/workspaceName,零业务)

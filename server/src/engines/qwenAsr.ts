@@ -39,15 +39,19 @@ interface QwenResponseShape {
 
 /**
  * Synchronous transcription via DashScope's multimodal-generation endpoint.
- * Context enhancement: the system message's text carries the biasing corpus
- * (project vocabulary + background + previous transcript, ≤10k tokens per DashScope docs).
+ *
+ * NOTE: an earlier version of this function also sent a `{ role: 'system', content: [...] }`
+ * message carrying a free-form "context enhancement" corpus (project vocabulary/background),
+ * based on an unofficial third-party summary. Alibaba's actual API reference does NOT document
+ * that mechanism for this synchronous endpoint — the only hint of a context parameter anywhere
+ * in the official docs is a commented-out `parameters.corpus.text` field on a DIFFERENT
+ * (async file-transcription) endpoint/model. In production, that system message was observed
+ * being echoed back verbatim as the "transcription" (the model treated it as conversational
+ * content to read out, not as silent bias) — a real prompt-injection-style contamination bug.
+ * Fixed by sending audio-only requests here; vocabulary/identifier correction now happens
+ * exclusively in the (verified-safe) text rewrite stage — see prompts.ts buildRewriteUserMessage.
  */
-export async function qwenTranscribe(
-  region: QwenRegion,
-  audioBase64: string,
-  language: string | undefined,
-  contextText: string,
-): Promise<string> {
+export async function qwenTranscribe(region: QwenRegion, audioBase64: string, language: string | undefined): Promise<string> {
   if (!region.apiKey) {
     throw new EngineError('asr', 'dashscope_not_configured');
   }
@@ -61,10 +65,7 @@ export async function qwenTranscribe(
     body: JSON.stringify({
       model: region.model,
       input: {
-        messages: [
-          { role: 'system', content: [{ text: contextText }] },
-          { role: 'user', content: [{ audio: `data:audio/mpeg;base64,${audioBase64}` }] },
-        ],
+        messages: [{ role: 'user', content: [{ audio: `data:audio/mpeg;base64,${audioBase64}` }] }],
       },
       parameters: {
         asr_options: {

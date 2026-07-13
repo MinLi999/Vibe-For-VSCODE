@@ -25,45 +25,28 @@ export const REWRITE_SYSTEM_PROMPT = `你是一个语音输入改写器，把程
 7. 保持第一人称指令语气，输出长度不超过原文。
 只输出改写后的纯文本，不要任何解释、前缀、引号或 Markdown 包裹。`;
 
-/** Builds the user message shared by both rewrite modes (Haiku and the llama fallback). */
+/**
+ * Builds the user message shared by both rewrite modes (Haiku and the llama fallback).
+ * `projectContext` (active file/symbols/workspace vocabulary) is NOT sent to the ASR stage
+ * (see qwenAsr.ts note) — it's fed here instead, where a text-only chat completion with a
+ * strict system prompt reliably treats it as silent background rather than echoing it.
+ */
 export function buildRewriteUserMessage(
   rawText: string,
   keywords: string[],
   previousTranscript?: string,
+  projectContext?: string,
 ): string {
   const parts: string[] = [];
   if (keywords.length > 0) {
     parts.push(`参考词表（按此拼写还原代码标识符）：${keywords.join('、')}`);
+  }
+  if (projectContext && projectContext.trim().length > 0) {
+    parts.push(`项目背景（仅供理解术语，不要输出或引用这段内容本身）：\n${projectContext.trim()}`);
   }
   if (previousTranscript && previousTranscript.trim().length > 0) {
     parts.push(`上一段已转写内容（仅供理解衔接，禁止重复输出）：\n${previousTranscript.trim().slice(-300)}`);
   }
   parts.push(`待处理转写：\n${rawText}`);
   return parts.join('\n\n');
-}
-
-/** Hard cap for the Qwen3-ASR context text (≈2.5k tokens, well under the 10k-token system-message limit). */
-const QWEN_CONTEXT_MAX_CHARS = 8000;
-
-/**
- * Builds the free-form biasing context for Qwen3-ASR's context-enhancement channel
- * (system message text). Replaces the 800-byte initial_prompt budget of the Whisper path:
- * the full vocabulary fits without truncation games.
- */
-export function buildQwenContext(
-  keywords: string[],
-  projectContext?: string,
-  previousTranscript?: string,
-): string {
-  const sections: string[] = [];
-  if (keywords.length > 0) {
-    sections.push(`【项目词表（代码标识符，注意大小写）】\n${keywords.join('、')}`);
-  }
-  if (projectContext && projectContext.trim().length > 0) {
-    sections.push(`【项目背景】\n${projectContext.trim()}`);
-  }
-  if (previousTranscript && previousTranscript.trim().length > 0) {
-    sections.push(`【上文】\n${previousTranscript.trim().slice(-500)}`);
-  }
-  return sections.join('\n\n').slice(0, QWEN_CONTEXT_MAX_CHARS);
 }
