@@ -112,6 +112,15 @@ const NOISE_FLOOR_FACTOR = 2.5;
 /** Initial calibration window: the minimum chunk amplitude within this window seeds the noise floor. */
 const CALIBRATION_WINDOW_MS = 500;
 
+/**
+ * macOS's avfoundation device isn't always released the instant the previous ffmpeg process
+ * exits — a new capture that starts too soon can silently record a perfectly valid, correctly
+ * timed MP3 of pure digital silence while CoreAudio finishes tearing down the prior session.
+ * Confirmed via server logs: a 502 "no speech" with a normal-sized (~6s) audio payload that
+ * both Qwen3-ASR and Whisper independently read as empty — not a capture failure, a silent one.
+ */
+const AVFOUNDATION_SETTLE_MS = 400;
+
 export class AudioRecorderService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private detectedOk: string | null = null; // Caches the resolved binary path once successfully probed.
@@ -124,6 +133,8 @@ export class AudioRecorderService {
   private noiseFloor: number | null = null;
   private observedMs = 0;
   private onSegmentError: ((error: Error) => void) | undefined;
+  /** Timestamp of the last stop/cancel — used to give macOS's avfoundation device time to release. */
+  private lastStoppedAtMs = 0;
 
   get isRecording(): boolean {
     return this.child !== null;
@@ -167,6 +178,12 @@ export class AudioRecorderService {
   ): Promise<void> {
     if (this.child !== null) {
       throw new RecorderStartError('recorder already running');
+    }
+    if (os.platform() === 'darwin' && this.lastStoppedAtMs > 0) {
+      const sinceStop = Date.now() - this.lastStoppedAtMs;
+      if (sinceStop < AVFOUNDATION_SETTLE_MS) {
+        await new Promise((resolve) => setTimeout(resolve, AVFOUNDATION_SETTLE_MS - sinceStop));
+      }
     }
     const binary = await this.ensureFfmpeg(options.ffmpegPath);
     this.lastFfmpegPath = binary;
@@ -281,6 +298,7 @@ export class AudioRecorderService {
       }
       child.kill('SIGTERM');
     });
+    this.lastStoppedAtMs = Date.now();
 
     // Send any trailing PCM ≥200ms to the ASR — even quiet audio may hold real final words
     // (amplitude-based discarding here used to eat softly-spoken endings); silence is the
@@ -310,6 +328,7 @@ export class AudioRecorderService {
     this.pcmChunks = [];
     this.totalPcmBytes = 0;
     child.kill('SIGKILL');
+    this.lastStoppedAtMs = Date.now();
   }
 
   private processPcmChunk(
