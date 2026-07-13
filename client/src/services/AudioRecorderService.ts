@@ -19,6 +19,9 @@ export class RecorderStartError extends Error {}
 /** MP3 compression failure of a recorded PCM segment (surfaced to the Controller for UI). */
 export class CompressionError extends Error {}
 
+/** Internal control-flow signal only: cancel()/stop() won the race against a pending trySpawn attempt. Never surfaced to the Controller. */
+class RecorderCancelledError extends Error {}
+
 export interface RecorderOptions {
   /** Empty string = use `ffmpeg` from PATH. */
   ffmpegPath: string;
@@ -196,14 +199,18 @@ export class AudioRecorderService {
     this.observedMs = 0;
     this.onSegmentError = options.onSegmentError;
 
-    const isVad = options.vadEnabled && options.onSegment;
+    const isVad = Boolean(options.vadEnabled && options.onSegment);
 
     const args = isVad
       ? [
           '-hide_banner',
           '-loglevel', 'error',
           ...captureArgs(options.audioDevice),
-          '-t', String(options.maxSeconds + 2),
+          // Generous backstop margin: the Controller's own JS timer is the primary stop
+          // mechanism and fires at exactly maxSeconds — a tight +2s buffer here risked ffmpeg's
+          // own internal -t enforcement racing (and sometimes losing badly, e.g. an abnormal
+          // exit) against our controlled stop() path if the event loop was even briefly busy.
+          '-t', String(options.maxSeconds + 15),
           '-ac', '1',
           '-ar', '16000',
           '-f', 's16le',
@@ -213,7 +220,11 @@ export class AudioRecorderService {
           '-hide_banner',
           '-loglevel', 'error',
           ...captureArgs(options.audioDevice),
-          '-t', String(options.maxSeconds + 2),
+          // Generous backstop margin: the Controller's own JS timer is the primary stop
+          // mechanism and fires at exactly maxSeconds — a tight +2s buffer here risked ffmpeg's
+          // own internal -t enforcement racing (and sometimes losing badly, e.g. an abnormal
+          // exit) against our controlled stop() path if the event loop was even briefly busy.
+          '-t', String(options.maxSeconds + 15),
           '-ac', '1',
           '-ar', '16000',
           '-b:a', '64k',
@@ -221,49 +232,110 @@ export class AudioRecorderService {
           'pipe:1',
         ];
 
-    const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true });
-    this.child = child;
-
-    let stderrTail = '';
-    child.stderr.on('data', (data: Buffer) => {
-      stderrTail = (stderrTail + data.toString()).slice(-500);
-    });
-    child.stdout.on('data', (chunk: Buffer) => {
-      if (isVad) {
-        this.processPcmChunk(chunk, options, onChunk);
-      } else {
-        onChunk(chunk);
+    // avfoundation can take noticeably longer than a blind timeout to fail opening a device
+    // that isn't released yet ("audio format is not supported" / "Input/output error") — seen
+    // in the wild well past 300ms. Confirm success on the first real stdout data instead of a
+    // fixed clock, and retry once on failure: this is exactly the "wait a bit, then it works"
+    // pattern users hit, now handled transparently instead of making them retry manually.
+    const MAX_ATTEMPTS = 2;
+    const RETRY_DELAY_MS = 700;
+    let lastError: RecorderStartError | null = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        await this.trySpawn(binary, args, isVad, options, onChunk, onError);
+        return;
+      } catch (err) {
+        if (err instanceof RecorderCancelledError) {
+          return; // cancel()/stop() raced the startup attempt — not a failure, don't retry.
+        }
+        lastError = err instanceof RecorderStartError ? err : new RecorderStartError(String(err));
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        }
       }
-    });
+    }
+    throw lastError ?? new RecorderStartError('ffmpeg failed to start for an unknown reason');
+  }
 
-    child.once('error', (err) => {
-      this.child = null;
-      onError(new RecorderStartError(`ffmpeg failed to start: ${err.message}`));
-    });
-    child.once('exit', (code, signal) => {
-      const wasStopping = this.child === null; // Already nulled by stop() = a normal stop.
-      this.child = null;
-      // A deliberate stop (SIGTERM/q) or hitting -t (code 0/255) both count as normal; anything else is abnormal.
-      if (!wasStopping && code !== 0 && code !== 255 && signal === null) {
-        onError(new RecorderStartError(`ffmpeg exited abnormally (code ${code}): ${stderrTail.trim() || 'no stderr output'}`));
-      }
-    });
+  /**
+   * Spawns ffmpeg and waits for either the first real stdout chunk (device opened, capture is
+   * genuinely flowing) or an exit/error event, whichever comes first — up to a generous window
+   * that covers slow avfoundation device negotiation. `this.child` is set synchronously so
+   * cancel()/stop() can act on the in-flight process during this race. Resolves on confirmed
+   * success (permanent onChunk/onError listeners stay wired for the rest of the session);
+   * rejects on failure so the caller can retry; rejects with RecorderCancelledError if
+   * cancel()/stop() won the race instead.
+   */
+  private trySpawn(
+    binary: string,
+    args: string[],
+    isVad: boolean,
+    options: RecorderOptions,
+    onChunk: (chunk: Buffer) => void,
+    onError: (error: Error) => void,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true });
+      this.child = child;
+      let stderrTail = '';
+      let confirmed = false;
 
-    // Surface immediate failures (e.g. device in use / no permission) within 300ms so start() rejects directly.
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        child.removeListener('exit', earlyExit);
+      const confirmTimer = setTimeout(() => {
+        // No data and no exit within the window: treat as started (e.g. genuinely silent
+        // input is legitimate) rather than blocking indefinitely.
+        confirmed = true;
         resolve();
-      }, 300);
-      const earlyExit = (code: number | null): void => {
-        clearTimeout(timer);
-        reject(
-          new RecorderStartError(
-            `ffmpeg exited immediately (code ${code}): ${stderrTail.trim() || 'check microphone permission and input device'}`,
-          ),
-        );
-      };
-      child.once('exit', earlyExit);
+      }, 1500);
+
+      child.stderr.on('data', (data: Buffer) => {
+        stderrTail = (stderrTail + data.toString()).slice(-500);
+      });
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (!confirmed) {
+          confirmed = true;
+          clearTimeout(confirmTimer);
+          resolve();
+        }
+        if (isVad) {
+          this.processPcmChunk(chunk, options, onChunk);
+        } else {
+          onChunk(chunk);
+        }
+      });
+
+      child.once('error', (err) => {
+        const wasStopping = this.child === null;
+        this.child = null;
+        clearTimeout(confirmTimer);
+        if (wasStopping) {
+          reject(new RecorderCancelledError());
+        } else if (!confirmed) {
+          reject(new RecorderStartError(`ffmpeg failed to start: ${err.message}`));
+        } else {
+          onError(new RecorderStartError(`ffmpeg failed to start: ${err.message}`));
+        }
+      });
+      child.once('exit', (code, signal) => {
+        const wasStopping = this.child === null; // Already nulled by stop()/cancel() = deliberate.
+        this.child = null;
+        clearTimeout(confirmTimer);
+        if (wasStopping) {
+          if (!confirmed) {
+            reject(new RecorderCancelledError());
+          }
+          return;
+        }
+        // A deliberate stop (SIGTERM/q) or hitting -t (code 0/255) both count as normal.
+        if (code === 0 || code === 255 || signal !== null) {
+          return;
+        }
+        const message = `ffmpeg exited abnormally (code ${code}): ${stderrTail.trim() || 'no stderr output'}`;
+        if (!confirmed) {
+          reject(new RecorderStartError(message));
+        } else {
+          onError(new RecorderStartError(message));
+        }
+      });
     });
   }
 
