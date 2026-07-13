@@ -37,14 +37,11 @@ const REWRITE_MODES: readonly RewriteMode[] = ['off', 'clean', 'rewrite'];
  * a Chinese scene-setting sentence + comma-separated vocabulary. Whisper treats this as
  * preceding context, biasing similar-sounding speech toward these code identifiers
  * (preventing variable names from being transcribed as phonetically-similar Chinese characters).
- * Only used on the Whisper path — Qwen3-ASR gets the far roomier context channel instead.
+ * previousTranscript is deliberately NOT included: Whisper echoes its prompt back verbatim on
+ * near-silent audio, which duplicated already-inserted sentences in the user's chat.
  */
-export function buildInitialPrompt(keywords: string[], previousTranscript?: string): string | undefined {
+export function buildInitialPrompt(keywords: string[]): string | undefined {
   let promptVal = '';
-  if (previousTranscript && previousTranscript.trim().length > 0) {
-    promptVal += previousTranscript.trim().slice(-300) + '。';
-  }
-
   if (keywords.length > 0) {
     const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
     const suffix = ' 这些。现在我要开始说一下修改思路。';
@@ -180,7 +177,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     }
   }
   if (asrEngine !== 'qwen3-asr-flash') {
-    rawText = await whisperTranscribe(env, body.audio, body.language, buildInitialPrompt(body.keywords, body.previousTranscript));
+    rawText = await whisperTranscribe(env, body.audio, body.language, buildInitialPrompt(body.keywords));
   }
   const asrMs = Date.now() - started;
 
@@ -206,7 +203,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
 
   if (body.rewriteMode !== 'off' && rawText.trim().length >= MIN_REWRITE_CHARS) {
     const systemPrompt = body.rewriteMode === 'rewrite' ? REWRITE_SYSTEM_PROMPT : CLEAN_SYSTEM_PROMPT;
-    const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.previousTranscript, body.projectContext);
+    const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.projectContext);
 
     const primaryRewrite = (async () => {
       if (tier === 'quality' && env.ANTHROPIC_API_KEY) {
