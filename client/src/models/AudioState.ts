@@ -47,6 +47,11 @@ export class AudioState {
     return Math.floor((Date.now() - this.startedAtMs) / 1000);
   }
 
+  /** Milliseconds since recording started (for minimum-duration guards on quick stops). */
+  get elapsedMs(): number {
+    return this.startedAtMs === null ? 0 : Date.now() - this.startedAtMs;
+  }
+
   /** Text of the most recent successful transcription (for re-insert scenarios). */
   get lastText(): string | null {
     return this.lastTranscription;
