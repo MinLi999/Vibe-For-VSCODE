@@ -4,9 +4,12 @@
  */
 import * as vscode from 'vscode';
 
-/** Wave animation frames (cycled while recording). */
-const WAVE_FRAMES = ['▁▃▅▇', '▃▅▇▅', '▅▇▅▃', '▇▅▃▁', '▅▃▁▃', '▃▁▃▅'] as const;
-const WAVE_INTERVAL_MS = 200;
+/** Bar glyphs by height (index 0 = quietest). The live meter picks per-cell heights from the level. */
+const BAR_GLYPHS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'] as const;
+/** Number of cells in the live meter. */
+const METER_CELLS = 5;
+/** Meter refresh cadence — fast enough to feel reactive to the voice. */
+const METER_INTERVAL_MS = 110;
 
 /** Session stats rendered after each utterance (data assembled by the Controller). */
 export interface SessionStats {
@@ -26,7 +29,6 @@ export const REWRITE_MODE_LABELS: Record<string, string> = {
 export class StatusBarViewer implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
   private waveTimer: ReturnType<typeof setInterval> | null = null;
-  private waveFrame = 0;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
   private rewriteModeLabel = '';
   private lastStatsLine = '';
@@ -61,18 +63,39 @@ export class StatusBarViewer implements vscode.Disposable {
     this.item.backgroundColor = undefined;
   }
 
-  /** Recording: red background + wave animation + elapsed seconds (Controller supplies elapsed per frame). */
-  showRecording(elapsedSecondsProvider: () => number, maxSeconds: number): void {
+  /**
+   * Recording: red background + LIVE input meter driven by the actual mic level + elapsed seconds.
+   * The meter reacts to the user's voice (bars jump when speaking, flatten in silence) — this is
+   * the primary "your mic is working and we're hearing you" signal, replacing anxious guessing.
+   * `levelProvider` returns 0..1 (0 when VAD is off / no PCM to measure → meter stays flat but the
+   * $(record) icon + timer still confirm recording is active).
+   */
+  showRecording(elapsedSecondsProvider: () => number, maxSeconds: number, levelProvider: () => number): void {
     this.stopTimers();
     this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-    this.item.tooltip = '录音中 —— 再按一次停止并转写,Esc 取消';
+    this.item.tooltip = '录音中 —— 波形跟随你的声音跳动即表示麦克风正常;再按一次停止并转写,Esc 取消';
     const render = (): void => {
-      const frame = WAVE_FRAMES[this.waveFrame % WAVE_FRAMES.length];
-      this.waveFrame += 1;
-      this.item.text = `$(record) ${frame} ${elapsedSecondsProvider()}s/${maxSeconds}s`;
+      this.item.text = `$(record) ${this.meter(levelProvider())} ${elapsedSecondsProvider()}s/${maxSeconds}s`;
     };
     render();
-    this.waveTimer = setInterval(render, WAVE_INTERVAL_MS);
+    this.waveTimer = setInterval(render, METER_INTERVAL_MS);
+  }
+
+  /**
+   * Renders a reactive meter for the current level (0..1). Per-cell jitter makes it read like a
+   * moving waveform when there's signal, while a near-zero level renders a calm flat baseline.
+   */
+  private meter(level: number): string {
+    const clamped = Math.max(0, Math.min(1, level));
+    let out = '';
+    for (let i = 0; i < METER_CELLS; i++) {
+      // Center cells swing a bit more than the edges; jitter only matters once there's real signal.
+      const centerBoost = 1 - Math.abs(i - (METER_CELLS - 1) / 2) / METER_CELLS;
+      const h = clamped * centerBoost * (0.55 + 0.9 * Math.random());
+      const idx = Math.max(0, Math.min(BAR_GLYPHS.length - 1, Math.round(h * (BAR_GLYPHS.length - 1))));
+      out += BAR_GLYPHS[idx];
+    }
+    return out;
   }
 
   /** Processing: spinner (optionally with the running segment count during a VAD session). */
