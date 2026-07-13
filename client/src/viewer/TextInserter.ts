@@ -81,15 +81,22 @@ export class TextInserter {
     // Always copy to clipboard as a fallback/safety net first, in case it's a custom webview chat
     await this.intoClipboard(text);
 
-    // Try executing known chat panel focus commands — stop at the first success.
-    // Order: Antigravity (Gemini) → Cursor → Copilot → Cline → Continue → Cody → Amazon Q → Windsurf
+    // Only fire commands that are actually registered in this IDE. The previous blind-fire
+    // approach fell through to `workbench.action.chat.open` (a built-in that ALWAYS exists and
+    // ALWAYS "succeeds") whenever none of the listed commands existed — hijacking the flow into
+    // Copilot Chat even when the user's actual agent panel (e.g. Claude Code) was installed.
+    const available = new Set(await vscode.commands.getCommands(true));
+
+    // Priority order: Claude Code (this product's primary target) → other agent panels.
     const chatCommands = [
-      'cloudcode.gemini.chatView.focus',        // Antigravity IDE (Gemini Chat)
+      'claude-vscode.focus',                     // Claude Code: Focus input (anthropic.claude-code)
+      'claude-vscode.sidebar.open',              // Claude Code: Open in Side Bar (fallback)
+      'cloudcode.gemini.chatView.focus',         // Antigravity IDE (Gemini Chat)
       'workbench.view.extension.geminiChat',     // Antigravity IDE (alt)
       'composer.openOrFocus',                    // Cursor Composer
       'aichat.newfollowupaction',                // Cursor AIChat
       'composerMode.agent',                      // Cursor Agent Mode
-      'cline.plusButtonClicked',                  // Cline (Claude Dev)
+      'cline.plusButtonClicked',                 // Cline (Claude Dev)
       'continue.focusContinueInput',             // Continue
       'cody.chat.focus',                         // Sourcegraph Cody
       'aws.amazonq.chat.focus',                  // Amazon Q
@@ -98,17 +105,27 @@ export class TextInserter {
 
     let focused = false;
     for (const cmd of chatCommands) {
+      if (!available.has(cmd)) {
+        continue;
+      }
       try {
         await vscode.commands.executeCommand(cmd);
         focused = true;
-        break;  // Stop at the first successful command — don't fire the rest
+        break; // Stop at the first successful command — don't fire the rest
       } catch {
-        // Command not available in this IDE; try next
+        // Registered but failed (e.g. view disposed); try next
       }
     }
 
-    // Fall back to built-in Copilot Chat if none of the custom ones succeeded
-    if (!focused) {
+    if (focused) {
+      // A webview chat panel has focus with the text on the clipboard; process spawning is
+      // forbidden in the viewer, so the Controller performs the system paste.
+      return { via: 'chat', needsSystemPaste: true };
+    }
+
+    // Built-in Copilot Chat only as a LAST resort, and only when Copilot Chat is actually
+    // installed — otherwise this just opens an empty chat panel the user never asked for.
+    if (vscode.extensions.getExtension('github.copilot-chat') !== undefined) {
       try {
         await vscode.commands.executeCommand('workbench.action.chat.open', {
           query: text,
@@ -116,14 +133,14 @@ export class TextInserter {
         });
         // Copilot Chat has a native query API — no system paste needed.
         return { via: 'chat', needsSystemPaste: false };
-      } catch (err) {
+      } catch {
         // Ignore built-in Copilot Chat open failure
       }
     }
 
-    // A webview chat panel has focus (or nothing focused) with text on the clipboard;
-    // process spawning is forbidden in the viewer, so the Controller performs the system paste.
-    return { via: 'chat', needsSystemPaste: true };
+    // No chat surface found: the text is on the clipboard; report that honestly instead of
+    // blind-pasting into whatever happens to have focus.
+    return { via: 'clipboard' };
   }
 
   private async intoClipboard(text: string): Promise<InsertOutcome> {
