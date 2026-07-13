@@ -10,7 +10,6 @@ import { VocabularyModel, type ContextPayload } from '../models/VocabularyModel'
 import { StatusBarViewer, REWRITE_MODE_LABELS } from '../viewer/StatusBarViewer';
 import { TextInserter, TextInsertionError, type InsertTarget, type InsertOutcome } from '../viewer/TextInserter';
 import { EditorContextViewer } from '../viewer/EditorContextViewer';
-import { RewriteComparisonViewer } from '../viewer/RewriteComparisonViewer';
 import { AudioRecorderService, FfmpegNotFoundError, RecorderStartError } from '../services/AudioRecorderService';
 import { ApiError, CloudflareApiService, type ChineseVariant, type RegionPreference, type RewriteMode } from '../services/CloudflareApiService';
 import { WorkspaceContextService } from '../services/WorkspaceContextService';
@@ -35,8 +34,6 @@ interface VibeConfig {
   apiProvider: string;
   customEndpoint: string;
   rewriteMode: RewriteMode;
-  /** Evaluation-only: shadow-run Qwen-Plus alongside Haiku, logged to the comparison Output Channel. */
-  rewriteCompareEnabled: boolean;
   /** Output Chinese script/idiom variant, applied server-side by the rewrite stage. */
   chineseVariant: ChineseVariant;
   /** Manual DashScope region override ('auto' = continent-based routing on the server). */
@@ -50,7 +47,7 @@ interface VibeConfig {
 /** Unified provider result: cloudflare returns server-side rewrite info; others are ASR-only. */
 interface TranscriptionOutcome {
   text: string;
-  /** Short label for the status bar, e.g. "Qwen3+Haiku" / "Whisper" / "groq". */
+  /** Short label for the status bar, e.g. "Qwen3+Qwen" / "Whisper" / "groq". */
   engineLabel: string;
   totalMs: number;
   /** True when the server already ran the rewrite stage (skip client-side correction). */
@@ -65,7 +62,6 @@ function engineLabelOf(engines: { asr: string; rewrite: string }): string {
   };
   const rewriteLabels: Record<string, string> = {
     'qwen-plus': 'Qwen',
-    'claude-haiku-4-5': 'Haiku',
     'cf-llama-3.1-8b-instruct': 'Llama',
   };
   const asr = asrLabels[engines.asr] ?? engines.asr;
@@ -163,7 +159,6 @@ export class VibeController implements vscode.Disposable {
     private readonly workspaceContext: WorkspaceContextService,
     private readonly systemPaste: SystemPasteService,
     private readonly keybindingLookup: KeybindingLookupService,
-    private readonly rewriteComparison: RewriteComparisonViewer,
   ) {
     // The keybinding's `when: vibefox.recording` (Esc to cancel) depends on this context.
     this.disposables.push(
@@ -680,22 +675,9 @@ export class VibeController implements vscode.Disposable {
         keywords,
         projectContext: context.projectContext || undefined,
         rewriteMode: config.rewriteMode,
-        compareRewrite: config.rewriteCompareEnabled,
         chineseVariant: config.chineseVariant,
         regionPreference: config.dashscopeRegion,
       });
-      if (config.rewriteCompareEnabled && result.rewriteComparison) {
-        this.rewriteComparison.log({
-          rawText: result.rawText,
-          primaryEngine: result.engines.rewrite,
-          primaryText: result.finalText,
-          primaryMs: result.timings.rewrite_ms,
-          altEngine: result.rewriteComparison.altEngine,
-          altText: result.rewriteComparison.altText,
-          altMs: result.rewriteComparison.altMs,
-          altError: result.rewriteComparison.altError,
-        });
-      }
       return {
         text: result.finalText,
         engineLabel: engineLabelOf(result.engines),
@@ -976,7 +958,6 @@ export class VibeController implements vscode.Disposable {
       apiProvider: getWithFallback<string>('apiProvider', 'cloudflare'),
       customEndpoint: getWithFallback<string>('customEndpoint', '').trim(),
       rewriteMode: getWithFallback<RewriteMode>('rewriteMode', 'clean'),
-      rewriteCompareEnabled: getWithFallback<boolean>('rewriteCompareEnabled', false),
       chineseVariant: getWithFallback<ChineseVariant>('chineseVariant', 'simplified-cn'),
       dashscopeRegion: getWithFallback<RegionPreference>('dashscopeRegion', 'auto'),
       llmCorrectionProvider: getWithFallback<string>('llmCorrectionProvider', 'auto'),
