@@ -4,6 +4,10 @@
  */
 
 export type RewriteMode = 'off' | 'clean' | 'rewrite';
+/** Output Chinese variant: script + regional idiom, applied by the server's rewrite stage. */
+export type ChineseVariant = 'simplified-cn' | 'simplified-sg-my' | 'traditional-tw' | 'traditional-hk-mo';
+/** Manual DashScope region override; 'auto' = server routes by the request's continent. */
+export type RegionPreference = 'auto' | 'apac' | 'us';
 
 /** Protocol v2 request (server/src/types.ts TranscribeRequestBody). Prompts/models are server-owned. */
 export interface TranscribeRequest {
@@ -11,12 +15,14 @@ export interface TranscribeRequest {
   audio: string;
   language: string;
   keywords: string[];
-  /** Free-form project context for the quality-tier ASR's context-enhancement channel. */
+  /** Free-form project context fed to the rewrite stage for terminology understanding. */
   projectContext?: string;
   previousTranscript?: string;
   rewriteMode: RewriteMode;
-  /** Evaluation-only: shadow-run Qwen-Plus rewrite for side-by-side comparison against Haiku. */
+  /** Evaluation-only: shadow-run the alternative rewrite engine (Haiku) for side-by-side comparison. */
   compareRewrite?: boolean;
+  chineseVariant?: ChineseVariant;
+  regionPreference?: RegionPreference;
 }
 
 /** Protocol v2 response. v1 servers (only `text`) are mapped into this shape for compatibility. */
@@ -28,8 +34,8 @@ export interface TranscribeResponse {
   engines: { asr: string; rewrite: string };
   timings: { asr_ms: number; rewrite_ms: number; total_ms: number };
   fallback?: { asr?: string; rewrite?: string };
-  /** Present only when the request set compareRewrite:true. */
-  rewriteComparison?: { qwenText?: string; qwenMs?: number; qwenError?: string };
+  /** Present only when the request set compareRewrite:true — the shadow (alternative) engine's output. */
+  rewriteComparison?: { altEngine?: string; altText?: string; altMs?: number; altError?: string };
 }
 
 export type ApiErrorKind =
@@ -104,7 +110,7 @@ export class CloudflareApiService {
       timings?: { asr_ms?: number; rewrite_ms?: number; total_ms?: number };
       duration_ms?: number;
       fallback?: { asr?: string; rewrite?: string };
-      rewriteComparison?: { qwenText?: string; qwenMs?: number; qwenError?: string };
+      rewriteComparison?: { altEngine?: string; altText?: string; altMs?: number; altError?: string };
     };
 
     if (typeof body.finalText === 'string' && typeof body.rawText === 'string') {

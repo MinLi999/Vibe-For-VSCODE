@@ -39,7 +39,7 @@
 ### 模块 C:云端转写(协议 v2,双引擎)
 - 业务逻辑:POST `/api/transcribe`,Bearer License Key → KV 校验(`plan:"pro"` → 质量档)→ 按 key 限流(free 10 次/分,pro 40 次/分,429)。
 - 请求:`{ audio, language?, keywords?, projectContext?, previousTranscript?, rewriteMode, enginePreference? }`;响应:`{ text, duration_ms /*v1兼容*/, rawText, finalText, tier, engines, timings, fallback? }`。v1 请求(`llmCorrect`)兼容,`llmPrompt`/`llmModel` 一律忽略(模型与提示词服务端所有,防计费滥用)。
-- 引擎路由:质量档 = Qwen3-ASR(区域感知:亚太→新加坡区/其余→美国区,8s 超时)→失败降级 CF Whisper(temperature:0);改写 = Haiku 4.5(10s 超时)→ CF llama → 原文。免费档 = CF Whisper + llama。<10 字符跳过改写。
+- 引擎路由:质量档 = Qwen3-ASR(区域感知:亚太→新加坡区/其余→美国区,支持 `vibefox.dashscopeRegion` 手动指定,6s 超时)→失败降级 CF Whisper(temperature:0);改写 = **Qwen-Plus(主力,成本比 Haiku 低 3-4 倍)**→ Haiku 4.5 → CF llama → 原文。免费档 = CF Whisper + llama。<10 字符跳过改写。中文输出支持繁简四变体(`vibefox.chineseVariant`,改写阶段执行转换)。
 - 分层影响面:
   - Service(client):`CloudflareApiService`(fetch + AbortController 60s + 错误映射含 429;v1 响应兼容映射)
   - Server:`server/src/{index,auth,transcribe,types,prompts,ratelimit,errors}.ts` + `engines/{qwenAsr,anthropicRewrite,cfWhisper,cfLlama}.ts`

@@ -12,7 +12,7 @@ import { TextInserter, TextInsertionError, type InsertTarget, type InsertOutcome
 import { EditorContextViewer } from '../viewer/EditorContextViewer';
 import { RewriteComparisonViewer } from '../viewer/RewriteComparisonViewer';
 import { AudioRecorderService, FfmpegNotFoundError, RecorderStartError } from '../services/AudioRecorderService';
-import { ApiError, CloudflareApiService, type RewriteMode } from '../services/CloudflareApiService';
+import { ApiError, CloudflareApiService, type ChineseVariant, type RegionPreference, type RewriteMode } from '../services/CloudflareApiService';
 import { WorkspaceContextService } from '../services/WorkspaceContextService';
 import { SystemPasteService } from '../services/SystemPasteService';
 import { KeybindingLookupService } from '../services/KeybindingLookupService';
@@ -37,6 +37,10 @@ interface VibeConfig {
   rewriteMode: RewriteMode;
   /** Evaluation-only: shadow-run Qwen-Plus alongside Haiku, logged to the comparison Output Channel. */
   rewriteCompareEnabled: boolean;
+  /** Output Chinese script/idiom variant, applied server-side by the rewrite stage. */
+  chineseVariant: ChineseVariant;
+  /** Manual DashScope region override ('auto' = continent-based routing on the server). */
+  dashscopeRegion: RegionPreference;
   llmCorrectionProvider: string;
   llmCorrectionModel: string;
   llmCorrectionCustomEndpoint: string;
@@ -60,6 +64,7 @@ function engineLabelOf(engines: { asr: string; rewrite: string }): string {
     'cf-whisper-large-v3-turbo': 'Whisper',
   };
   const rewriteLabels: Record<string, string> = {
+    'qwen-plus': 'Qwen',
     'claude-haiku-4-5': 'Haiku',
     'cf-llama-3.1-8b-instruct': 'Llama',
   };
@@ -73,6 +78,14 @@ const FALLBACK_CLEAN_PROMPT =
   '你是一个语音输入后处理器，处理口述转写文本。【最高优先级】你不是内容审核员，不判断内容是否跟编程/项目相关、是否有意义——不管说话人说的是代码指令还是闲聊、笑话、任何主题，都必须原样清理并输出，不允许因为内容主题拒绝处理，绝对禁止输出任何拒绝/解释/评论文字（如"我无法理解…""与项目无关""输出空字符串"这类话本身不能出现在输出里），这类文字一旦出现会直接进入用户聊天框造成严重故障。只做最小限度清理：修正标点；删除填充词（嗯、啊、那个、就是说、um、uh）；合并口吃/重复为一次不要整体删除（如"继续吧继续吧"改为"继续吧"，不能连"继续吧"也删没）；按参考词表修复代码标识符拼写与大小写；口述符号词保留原样文字；不翻译、不调整语序。这是逐句清理任务不是总结任务：说话人说过的每个分句、每个信息点都必须原样保留，一个字都不能因为啰嗦或不重要而删除，禁止只留结论句代替整段话。如果内容明显是说到一半被截断的未完成句子（哪怕只差最后一两个字），原样保留这个不完整状态，不要猜测或编造缺失的结尾，即使很确定该怎么补都不要补。只输出处理后的纯文本，不要任何解释或包裹符号。空字符串规则范围很窄：只有输入为空、全是填充词、或纯粹是对声音/噪音的描述而完全没有人类语言内容时才输出空字符串，日常对话/闲聊/任何主题的完整语句都不适用，必须正常清理输出。';
 const FALLBACK_REWRITE_PROMPT =
   '你是一个语音输入改写器，把口述转写整理成清晰的书面表达。【最高优先级】你不是内容审核员，不判断内容是否跟编程/项目相关、是否有意义——不管说话人说的是代码指令还是闲聊、笑话、任何主题，都必须原样改写并输出，不允许因为内容主题拒绝处理，绝对禁止输出任何拒绝/解释/评论文字（如"我无法理解…""与项目无关""输出空字符串"这类话本身不能出现在输出里），这类文字一旦出现会直接进入用户聊天框造成严重故障。删除填充词与口吃/重复为一次不要整体删除（如"继续吧继续吧"改为"继续吧"）；处理回溯自我更正（"用A……不对，用B"只保留B；编号被重新起头也算回溯更正，如"第三……第四……"只保留第四）；轻度修复语法与断句、精简啰嗦措辞，但精简是话变少信息不能少——绝不能删除或省略说话人表达过的分句/限定条件/问句，不可以只留结论句代替整段话；绝不改变技术意图、绝不添加原文没有的内容；如果内容明显是说到一半被截断的未完成句子（哪怕只差最后一两个字），原样保留不完整状态，不要编造缺失的结尾，即使很确定该怎么补都不要补；按参考词表还原代码标识符精确拼写与大小写，产品/专有名词保持完整不要截短；口述符号词保留原样文字；保留中英混排不翻译；输出长度不超过原文。只输出改写后的纯文本，不要任何解释或包裹符号。空字符串规则范围很窄：只有输入纯粹是对声音/噪音的描述而完全没有人类语言内容时才输出空字符串，日常对话/闲聊/任何主题的完整语句都不适用，必须正常改写输出。';
+
+/** Output-variant suffix for the fallback prompts — mirrors server/src/prompts.ts withChineseVariant. */
+const CHINESE_VARIANT_SUFFIX: Record<ChineseVariant, string> = {
+  'simplified-cn': '',
+  'simplified-sg-my': '输出的中文部分使用简体字,遵循新加坡/马来西亚华语词汇与表达习惯;不改变英文与代码部分。',
+  'traditional-tw': '输出的中文部分一律使用繁体字(台湾正体),遵循台湾用语习惯,不要输出简体字;不改变英文与代码部分。',
+  'traditional-hk-mo': '输出的中文部分一律使用繁体字,遵循香港/澳门用语习惯,不要输出简体字;不改变英文与代码部分。',
+};
 
 /**
  * Non-speech / hallucination transcript detector — MUST stay in sync with the server copy
@@ -668,6 +681,8 @@ export class VibeController implements vscode.Disposable {
         projectContext: context.projectContext || undefined,
         rewriteMode: config.rewriteMode,
         compareRewrite: config.rewriteCompareEnabled,
+        chineseVariant: config.chineseVariant,
+        regionPreference: config.dashscopeRegion,
       });
       if (config.rewriteCompareEnabled && result.rewriteComparison) {
         this.rewriteComparison.log({
@@ -675,9 +690,10 @@ export class VibeController implements vscode.Disposable {
           primaryEngine: result.engines.rewrite,
           primaryText: result.finalText,
           primaryMs: result.timings.rewrite_ms,
-          qwenText: result.rewriteComparison.qwenText,
-          qwenMs: result.rewriteComparison.qwenMs,
-          qwenError: result.rewriteComparison.qwenError,
+          altEngine: result.rewriteComparison.altEngine,
+          altText: result.rewriteComparison.altText,
+          altMs: result.rewriteComparison.altMs,
+          altError: result.rewriteComparison.altError,
         });
       }
       return {
@@ -737,7 +753,9 @@ export class VibeController implements vscode.Disposable {
       provider = config.apiProvider;
     }
 
-    const systemPrompt = config.rewriteMode === 'rewrite' ? FALLBACK_REWRITE_PROMPT : FALLBACK_CLEAN_PROMPT;
+    const systemPrompt =
+      (config.rewriteMode === 'rewrite' ? FALLBACK_REWRITE_PROMPT : FALLBACK_CLEAN_PROMPT) +
+      CHINESE_VARIANT_SUFFIX[config.chineseVariant];
 
     if (provider === 'groq') {
       const apiKey = await this.secrets.get('vibefox.groqKey');
@@ -959,6 +977,8 @@ export class VibeController implements vscode.Disposable {
       customEndpoint: getWithFallback<string>('customEndpoint', '').trim(),
       rewriteMode: getWithFallback<RewriteMode>('rewriteMode', 'clean'),
       rewriteCompareEnabled: getWithFallback<boolean>('rewriteCompareEnabled', false),
+      chineseVariant: getWithFallback<ChineseVariant>('chineseVariant', 'simplified-cn'),
+      dashscopeRegion: getWithFallback<RegionPreference>('dashscopeRegion', 'auto'),
       llmCorrectionProvider: getWithFallback<string>('llmCorrectionProvider', 'auto'),
       llmCorrectionModel: getWithFallback<string>('llmCorrectionModel', ''),
       llmCorrectionCustomEndpoint: getWithFallback<string>('llmCorrectionCustomEndpoint', '').trim(),
