@@ -192,7 +192,10 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
   // Never changes what gets returned as finalText/inserted by the client.
   let finalText = rawText;
   let rewriteEngine: TranscribeResponseBody['engines']['rewrite'] = 'none';
-  const rewriteStarted = Date.now();
+  // Own timer per branch (NOT Date.now() - outer-start): the two rewrite calls run concurrently
+  // via Promise.all below, so a single outer timer would report whichever engine is SLOWER for
+  // both — comparison timings need each engine's own isolated latency.
+  let primaryMs = 0;
 
   // --- Shadow comparison: Qwen-Plus rewrite, run CONCURRENTLY with the primary chain so the
   // evaluation adds ~0 sequential latency (bounded by whichever engine is slower). Never used
@@ -206,10 +209,12 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.projectContext);
 
     const primaryRewrite = (async () => {
+      const primaryStarted = Date.now();
       if (tier === 'quality' && env.ANTHROPIC_API_KEY) {
         try {
           finalText = await haikuRewrite(env, systemPrompt, userMessage);
           rewriteEngine = HAIKU_MODEL;
+          primaryMs = Date.now() - primaryStarted;
           return;
         } catch (err) {
           fallback.rewrite = toReasonCode(err, 'anthropic');
@@ -223,6 +228,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
         fallback.rewrite = fallback.rewrite ?? toReasonCode(err, 'cf_llama');
         finalText = rawText;
       }
+      primaryMs = Date.now() - primaryStarted;
     })();
 
     const shadowQwenRewrite =
@@ -241,7 +247,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
 
     await Promise.all([primaryRewrite, shadowQwenRewrite]);
   }
-  const rewriteMs = Date.now() - rewriteStarted;
+  const rewriteMs = primaryMs;
   const totalMs = Date.now() - started;
 
   return {

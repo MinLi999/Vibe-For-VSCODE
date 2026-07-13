@@ -2,8 +2,17 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 2.7 第二轮实测缺陷修复完成,已部署上线 (2026-07-12)。
-**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿,dedupe 4 用例全过,线上冒烟通过。⚠️ 待办:用户真实语音复测(重点:长录音多分段无重复句、按住热键即录、快速点按不再报错)。
+**阶段**:Phase 2.8 Haiku/Qwen 改写质量评估驱动的 prompt 加固完成,已部署上线 (2026-07-13)。
+**健康度**:🟢 双端编译/typecheck 全绿,已部署冒烟通过。⚠️ 待办:用户继续用 rewriteCompareEnabled 收集样本判断默认改写引擎是否切换。
+- 2026-07-13(用户提供 24 组 Haiku vs Qwen 真实对比样本,人工评审后发现三个问题,已修复):
+  ① **对比面板耗时数字是假的**:`rewriteMs` 用 `Date.now()-rewriteStarted` 在 `Promise.all` **两边都跑完才停表**,而 Haiku/Qwen 并发跑——停表时刻取决于较慢的一方,导致该数字实际等于"较慢引擎的耗时",被误标成"Haiku 专属耗时"用户日志里两栏数字永远相同就是这个 bug 的痕迹。修复:`primaryRewrite` 内部单独起 `primaryStarted` 计时,`rewriteMs` 改用这个隔离值,不再受 Qwen 影子调用速度污染。
+  ② **截断句被两个模型都瞎补**:用户说到一半的"给我的文"被 Haiku 补成"给我的文件"、Qwen 补成"给我的文本"——都是凭空杜撰结尾,违反"不增删内容"。两套服务端 prompt(clean/rewrite)与客户端兜底 prompt 均加入新规则:遇到语义明显不完整的截断句,原样保留,禁止猜测补全。
+  ③ **编号自纠没生效**:用户说"第三呢,如果,第四,如果……"(说漏嘴改口),两个模型都保留了被放弃的"第三"。REWRITE_SYSTEM_PROMPT 回溯自纠规则(仅 rewrite 档,clean 档不做重排)补充具体例子:编号重新起头也算回溯更正,只保留改口后的编号。顺带补了"产品专有名词不许截短"规则("Claude Code"被 Qwen 一次输出成"CLAUDE")。
+  评审结论(供后续判断是否切换默认改写引擎参考):Qwen-Plus 在同一批样本里更愿意做实际清理工作(修正的/地混用、去冗余指示词"那个/这种"、标识符驼峰化更准),但也更容易在 clean 档越权做句子重构;Haiku 偏保守、有时该清理的没清理。样本量还小,继续用对比面板攒数据。
+- 2026-07-12(第二轮实测反馈,四个症状全部修复):
+  ① **句子重复**("你现在需要调整几点…"一字不差出现两次):根因是 previousTranscript 被喂进 Whisper `initial_prompt` 与改写 LLM 的用户消息做"衔接"——Whisper 在接近静音的音频上会把 prompt 原文当转写结果吐出(著名失效模式),改写 LLM 也偶尔无视"禁止重复输出"照抄。修复:**从所有 prompt 向量中彻底移除 previousTranscript**(服务端 buildInitialPrompt/buildRewriteUserMessage、客户端各直连 provider 的 prompt 构建),会话转写只留在客户端;另加确定性兜底 `dedupeAgainstSession`(归一化整段回声消除 + ≥8 字符后缀-前缀重叠裁剪,4 组正反用例含用户原始样本全过)。
+  ② **按住热键仍报错 + 用户要求按住即录**:上一轮的 400ms 盲目去抖对"按住"反而有害——每 400ms 放行一个事件变成 start/stop 交替,撞出"没有录到音频"与 `invalid state transition: idle→processing`(后者是 stopAndTranscribe 在 `await recorder.stop()` 期间被并发重入)。重写为**双语义热键状态机**:录音中首个事件先armed 350ms pending-stop 窗口,窗口内再来事件即判定为 OS 按键自动重复(=按住)→ 进入 hold 模式,重复事件停止 650ms(=松手)才触发停止——**点按=开关,按住=对讲**一个键位同时支持;并加 isStopping 重入锁、await 后 phase 复查、<700ms 的最短录音时长保障(ffmpeg 启动需 ~300ms)。
+  ③ **程序"卡住"10 多秒后成功**:实际是 Qwen 超时(8s)→ Whisper 兜底的降级链总时长,用户看到的是静止的 spinner。Qwen 超时收紧到 6s,转写超过 6s 状态栏改显"转写中…(网络较慢或引擎切换中)"。
 - 2026-07-12(第二轮实测反馈,四个症状全部修复):
   ① **句子重复**("你现在需要调整几点…"一字不差出现两次):根因是 previousTranscript 被喂进 Whisper `initial_prompt` 与改写 LLM 的用户消息做"衔接"——Whisper 在接近静音的音频上会把 prompt 原文当转写结果吐出(著名失效模式),改写 LLM 也偶尔无视"禁止重复输出"照抄。修复:**从所有 prompt 向量中彻底移除 previousTranscript**(服务端 buildInitialPrompt/buildRewriteUserMessage、客户端各直连 provider 的 prompt 构建),会话转写只留在客户端;另加确定性兜底 `dedupeAgainstSession`(归一化整段回声消除 + ≥8 字符后缀-前缀重叠裁剪,4 组正反用例含用户原始样本全过)。
   ② **按住热键仍报错 + 用户要求按住即录**:上一轮的 400ms 盲目去抖对"按住"反而有害——每 400ms 放行一个事件变成 start/stop 交替,撞出"没有录到音频"与 `invalid state transition: idle→processing`(后者是 stopAndTranscribe 在 `await recorder.stop()` 期间被并发重入)。重写为**双语义热键状态机**:录音中首个事件先armed 350ms pending-stop 窗口,窗口内再来事件即判定为 OS 按键自动重复(=按住)→ 进入 hold 模式,重复事件停止 650ms(=松手)才触发停止——**点按=开关,按住=对讲**一个键位同时支持;并加 isStopping 重入锁、await 后 phase 复查、<700ms 的最短录音时长保障(ffmpeg 启动需 ~300ms)。
