@@ -173,7 +173,30 @@
         "vibefox.rewriteCompareEnabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**评估用**:同时用 Qwen-Plus 跑一份改写副本与 Haiku 对比,结果写入「VibeFox: Rewrite Comparison (Haiku vs Qwen)」输出面板,不影响实际插入的文本。仅质量档(pro license)生效;会增加请求延迟(等待较慢的一方)与 DashScope 调用成本,评估结束后建议关闭。"
+          "markdownDescription": "**评估用**:同时用备选引擎(Claude Haiku)跑一份改写副本与主引擎(Qwen-Plus)对比,结果写入「VibeFox: Rewrite Comparison」输出面板,不影响实际插入的文本。仅质量档(pro license)生效;会增加对比引擎的调用成本,评估结束后建议关闭。"
+        },
+        "vibefox.chineseVariant": {
+          "type": "string",
+          "enum": ["simplified-cn", "simplified-sg-my", "traditional-tw", "traditional-hk-mo"],
+          "default": "simplified-cn",
+          "enumDescriptions": [
+            "简体中文 · 中国大陆词汇与文法",
+            "简体中文 · 新加坡/马来西亚华语词汇与文法",
+            "繁体中文 · 台湾用语习惯(軟體/程式/滑鼠)",
+            "繁体中文 · 港澳用语习惯(軟件/程式)"
+          ],
+          "markdownDescription": "转写输出的中文变体(字形+地区用语习惯)。由改写阶段执行转换,因此 `#vibefox.rewriteMode#` 为 `off` 时不生效;英文与代码标识符不受影响。"
+        },
+        "vibefox.dashscopeRegion": {
+          "type": "string",
+          "enum": ["auto", "apac", "us"],
+          "default": "auto",
+          "enumDescriptions": [
+            "自动:按你的网络所在大洲就近路由(亚太→新加坡区,其余→美国区)",
+            "强制新加坡区(亚太)",
+            "强制美国区(Virginia)"
+          ],
+          "markdownDescription": "转写/改写模型(阿里云 DashScope)的地区选择。一般保持 `auto` 即可;若你常用 VPN 或自动路由判断的区域不理想,可手动固定。注意:服务端需为对应区域配置好 API Key,否则会自动降级到 Cloudflare 免费引擎。"
         },
         "vibefox.llmCorrectionEnabled": {
           "type": "boolean",

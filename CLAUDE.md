@@ -1,6 +1,6 @@
 # Vibe-For-Vscode — 开发规范
 
-语音「Vibe Coding」输入的闭源 VS Code 扩展:按 `ctrl+shift+space` 说话(中文优先、中英混杂),经 Cloudflare Worker **双引擎**处理 —— 质量档(license `plan:"pro"`)= Qwen3-ASR(DashScope,区域感知路由)转写 + Claude Haiku 4.5 改写;免费档/降级链 = Workers AI `@cf/openai/whisper-large-v3-turbo` + llama-3.1-8b —— 结果插入 LLM 聊天输入框(Claude Code / Cline / Copilot Chat)或活动编辑器。技术栈:TypeScript;客户端 = VS Code Extension(esbuild 打包、零运行时依赖);服务端 = Cloudflare Worker(native fetch handler、AI + KV 绑定 + DashScope/Anthropic secrets)。
+语音「Vibe Coding」输入的闭源 VS Code 扩展:按 `ctrl+shift+space` 说话(中文优先、中英混杂),经 Cloudflare Worker **双引擎**处理 —— 质量档(license `plan:"pro"`)= Qwen3-ASR(DashScope,区域感知路由,可手动指定区域)转写 + **Qwen-Plus 改写(主力,Haiku 4.5 兜底)**;免费档/降级链 = Workers AI `@cf/openai/whisper-large-v3-turbo` + llama-3.1-8b;支持中文繁简四变体输出(大陆/新马简体,台湾/港澳繁体)—— 结果插入 LLM 聊天输入框(Claude Code / Cline / Copilot Chat)或活动编辑器。技术栈:TypeScript;客户端 = VS Code Extension(esbuild 打包、零运行时依赖);服务端 = Cloudflare Worker(native fetch handler、AI + KV 绑定 + DashScope/Anthropic secrets)。
 
 ## AI 上下文路由 / Context Routing
 > 按任务类型读对应文档,别一次吞下全部。CLAUDE.md 只放*事实与红线*。

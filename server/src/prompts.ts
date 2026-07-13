@@ -31,6 +31,31 @@ export const REWRITE_SYSTEM_PROMPT = `你是一个语音输入改写器，把口
 只输出改写后的纯文本，不要任何解释、前缀、引号或 Markdown 包裹。
 8.【空字符串规则，范围很窄】只有输入完全是对声音/噪音/音乐的纯描述（如"(音频中充斥着机械噪音)"）而完全没有任何人类语言内容时才输出空字符串——日常对话、闲聊、任何主题的完整人类语句都不适用这条，必须正常改写输出。`;
 
+import type { ChineseVariant } from './types';
+
+/**
+ * Per-variant output instruction appended to the system prompt. The ASR raw text arrives in
+ * whatever script the engine produced (Qwen3-ASR defaults to Simplified); script/idiom
+ * conversion is the REWRITE stage's job, so rewriteMode 'off' bypasses variant conversion.
+ * Only touches script and regional wording — never translates and never alters code
+ * identifiers/English terms (those rules stay in force from the main prompt).
+ */
+const CHINESE_VARIANT_INSTRUCTIONS: Record<ChineseVariant, string> = {
+  'simplified-cn': '', // Default output already matches Mainland Simplified conventions.
+  'simplified-sg-my':
+    '\n输出的中文部分使用简体字，并遵循新加坡/马来西亚华语的词汇与表达习惯（如"巴刹""乐龄""摩哆"等当地惯用词在语境适用时保留或采用）；不改变英文与代码部分。',
+  'traditional-tw':
+    '\n输出的中文部分一律使用繁体字（台湾正体），并遵循台湾用语习惯（如"軟體""程式""滑鼠""伺服器"），不要输出简体字；不改变英文与代码部分。',
+  'traditional-hk-mo':
+    '\n输出的中文部分一律使用繁体字，并遵循香港/澳门用语习惯（如"軟件""程式""滑鼠""伺服器"等粤港常用书面词），不要输出简体字；不改变英文与代码部分。',
+};
+
+/** Appends the output-variant instruction (no-op for the default Mainland Simplified). */
+export function withChineseVariant(systemPrompt: string, variant: ChineseVariant | undefined): string {
+  const instruction = CHINESE_VARIANT_INSTRUCTIONS[variant ?? 'simplified-cn'];
+  return instruction ? systemPrompt + instruction : systemPrompt;
+}
+
 /**
  * Builds the user message shared by both rewrite modes (Haiku and the llama fallback).
  * `projectContext` (active file/symbols/workspace vocabulary) is NOT sent to the ASR stage
