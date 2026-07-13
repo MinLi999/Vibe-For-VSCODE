@@ -5,6 +5,7 @@ import { whisperTranscribe } from './engines/cfWhisper';
 import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
 import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
 import { HttpError, toReasonCode } from './errors';
+import { isNonSpeechTranscript } from './nonspeech';
 import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT } from './prompts';
 import type {
   Env,
@@ -183,8 +184,11 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
   }
   const asrMs = Date.now() - started;
 
-  if (rawText.length === 0) {
-    throw new HttpError(502, 'Transcription produced no text (silent audio or model failure)');
+  // Empty AND hallucinated non-speech ("...", "(音频中充斥着机械噪音…)") both count as "no speech":
+  // skipping the rewrite stage saves its cost, and the 502 message keeps the exact substrings
+  // ("no text"/"silent") the client's silent-skip matcher looks for.
+  if (rawText.length === 0 || isNonSpeechTranscript(rawText)) {
+    throw new HttpError(502, 'Transcription produced no text (silent or non-speech audio)');
   }
 
   // --- Rewrite stage: Haiku 4.5 (quality tier) → cf llama → raw text ---

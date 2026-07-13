@@ -70,9 +70,46 @@ function engineLabelOf(engines: { asr: string; rewrite: string }): string {
 
 /** Built-in prompts for the client-side correction fallback (non-cloudflare providers only). */
 const FALLBACK_CLEAN_PROMPT =
-  '你是一个语音输入后处理器，处理程序员的中英混合口述转写文本。只做最小限度清理：修正标点；删除填充词（嗯、啊、那个、就是说、um、uh）；合并口吃重复；按参考词表修复代码标识符拼写与大小写；口述符号词保留原样文字；不翻译、不增删内容、不调整语序。只输出处理后的纯文本，不要任何解释或包裹符号。';
+  '你是一个语音输入后处理器，处理程序员的中英混合口述转写文本。只做最小限度清理：修正标点；删除填充词（嗯、啊、那个、就是说、um、uh）；合并口吃重复；按参考词表修复代码标识符拼写与大小写；口述符号词保留原样文字；不翻译、不增删内容、不调整语序。只输出处理后的纯文本，不要任何解释或包裹符号。如果内容只是对声音/噪音/音乐的描述或没有可理解的语音，输出空字符串。';
 const FALLBACK_REWRITE_PROMPT =
-  '你是一个语音输入改写器，把程序员的中英混合口述转写整理成清晰指令：删除填充词与口吃重复；处理回溯自我更正（"用A……不对，用B"只保留B）；轻度修复语法与断句但绝不改变技术意图、绝不添加原文没有的内容；按参考词表还原代码标识符精确拼写与大小写；口述符号词保留原样文字；保留中英混排不翻译；输出长度不超过原文。只输出改写后的纯文本，不要任何解释或包裹符号。';
+  '你是一个语音输入改写器，把程序员的中英混合口述转写整理成清晰指令：删除填充词与口吃重复；处理回溯自我更正（"用A……不对，用B"只保留B）；轻度修复语法与断句但绝不改变技术意图、绝不添加原文没有的内容；按参考词表还原代码标识符精确拼写与大小写；口述符号词保留原样文字；保留中英混排不翻译；输出长度不超过原文。只输出改写后的纯文本，不要任何解释或包裹符号。如果内容只是对声音/噪音/音乐的描述或没有可理解的语音，输出空字符串。';
+
+/**
+ * Non-speech / hallucination transcript detector — MUST stay in sync with the server copy
+ * (server/src/nonspeech.ts). ASR engines answer silence or corrupted audio with ellipses,
+ * bracketed scene descriptions ("(音频中充斥着强烈的机械噪音…)"), or subtitle-watermark spam;
+ * inserting those into the user's chat is worse than inserting nothing.
+ */
+function isNonSpeechTranscript(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0) {
+    return true;
+  }
+  // Punctuation/ellipsis-only, e.g. "...", "。。。", "…"
+  if (/^[\s.。,，、;；:：!！?？~〜…·\-—_*]+$/.test(t)) {
+    return true;
+  }
+  // Entirely bracket-wrapped scene description, e.g. "(音频中充斥着强烈的机械噪音和金属摩擦声)"
+  if (/^[(（\[【][^)）\]】]{0,120}[)）\]】]$/.test(t)) {
+    return true;
+  }
+  // Audio-narration openings — a dictating developer never starts like this.
+  if (/^(音频|本段音频|该音频|此音频|背景音)/.test(t)) {
+    return true;
+  }
+  // Classic Whisper subtitle-watermark hallucinations (only when the whole utterance is short).
+  if (t.length <= 30) {
+    const lower = t.toLowerCase();
+    const spam = ['点赞', '订阅', '字幕', 'amara.org', '谢谢观看', 'thank you for watching', 'thanks for watching'];
+    if (spam.some((s) => lower.includes(s))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Ignore key-repeat while the hotkey is held down (OS auto-repeat fires every ~50ms). */
+const TOGGLE_DEBOUNCE_MS = 400;
 
 export class VibeController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
@@ -173,7 +210,17 @@ export class VibeController implements vscode.Disposable {
 
   // ── Command entry points ──────────────────────────────────
 
+  private lastToggleAt = 0;
+
   private async toggle(): Promise<void> {
+    // Holding the hotkey triggers OS key-repeat (~every 50ms), which used to slam
+    // start/stop against each other and error out with "没有录到音频".
+    const now = Date.now();
+    if (now - this.lastToggleAt < TOGGLE_DEBOUNCE_MS) {
+      return;
+    }
+    this.lastToggleAt = now;
+
     switch (this.audioState.currentPhase) {
       case 'idle':
         await this.startRecording();
@@ -364,18 +411,25 @@ export class VibeController implements vscode.Disposable {
       this.audioState.reset();
 
       const config = this.sessionConfig ?? this.readConfig();
-      if (config.vadEnabled && this.vadSegmentsTranscribedCount > 0) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        if (
-          errMsg.includes('no text') ||
-          errMsg.includes('silent') ||
-          errMsg.includes('empty') ||
-          errMsg.includes('502')
-        ) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const noSpeech =
+        errMsg.includes('no text') ||
+        errMsg.includes('non-speech') ||
+        errMsg.includes('silent') ||
+        errMsg.includes('empty') ||
+        errMsg.includes('502');
+
+      if (noSpeech) {
+        if (this.vadSegmentsTranscribedCount > 0) {
           // Silent trailing audio is a normal way for a VAD session to end.
           this.finishSession(config);
-          return;
+        } else {
+          // Nothing intelligible in the whole recording: a quiet status-bar hint,
+          // not a scary "转写失败" error toast.
+          this.statusBar.flashResult('error', '未识别到语音,请重试');
+          this.flushSessionErrors();
         }
+        return;
       }
 
       this.statusBar.flashResult('error', '转写失败');
@@ -421,6 +475,13 @@ export class VibeController implements vscode.Disposable {
   ): Promise<{ finalText: string; engineLabel: string; totalMs: number }> {
     const started = Date.now();
     const outcome = await this.transcribeWithProvider(config, audioBase64, context);
+
+    // Drop non-speech/hallucinated transcripts ("...", bracketed noise descriptions) BEFORE
+    // rewrite and dev-mode rules — checked here (not after) so a legitimately dictated
+    // spoken-symbol like "等号"→"=" isn't misclassified as punctuation-only garbage.
+    if (isNonSpeechTranscript(outcome.text)) {
+      return { finalText: '', engineLabel: outcome.engineLabel, totalMs: outcome.totalMs || Date.now() - started };
+    }
 
     let finalText = outcome.text;
     if (!outcome.serverRewrote && config.rewriteMode !== 'off') {
