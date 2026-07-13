@@ -1,6 +1,14 @@
 import * as vscode from 'vscode';
 
-const FIND_EXCLUDE = '**/{node_modules,dist,out,.git,bin,build,target,package-lock.json,yarn.lock,pnpm-lock.yaml}/**';
+/**
+ * Directory excludes use `/**` (matches anything *inside* that folder); lock files are
+ * excluded as bare filenames (a trailing `/**` would never match a plain file, so
+ * `package-lock.json` etc. previously slipped through and got scanned as "code" — their
+ * dependency-metadata tokens (integrity hashes, package names, os/cpu fields) polluted the
+ * workspace vocabulary sent to the ASR/rewrite stages).
+ */
+const FIND_EXCLUDE =
+  '{**/node_modules/**,**/dist/**,**/out/**,**/.git/**,**/bin/**,**/build/**,**/target/**,**/package-lock.json,**/npm-shrinkwrap.json,**/yarn.lock,**/pnpm-lock.yaml}';
 const FILE_GLOB = '**/*.{ts,js,py,go,c,cpp,h,java,cs,html,css,json,md,rs,kt,swift,rb,php}';
 const MAX_SCAN_FILES = 300;
 const IDENTIFIER_PATTERN = /[a-zA-Z_][a-zA-Z0-9_]{3,19}/g;

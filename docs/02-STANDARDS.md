@@ -24,8 +24,8 @@
 - 词汇提取 regex:`/[a-zA-Z_][a-zA-Z0-9_]{3,19}/g`;停用词 = 常见语言关键字小表。
 - **两级上下文载荷**(每录音会话构建一次并缓存):
   - `keywords[]` ≤ **40**(活动文档 top **20** → 工作区 top **15** → 其他标签页 → 最近 **15** 个文件名词干);
-  - `projectContext` ≤ **2000 字符**(项目名/当前文件+语言/当前文件符号 top **30**/工作区高频标识符 top **100**/相关文件,保留原始大小写)。
-- Whisper 路径 `initial_prompt`:previousTranscript 末 **300 字** + 中文引导句 + 顿号拼接词表,UTF-8 预算 **800 字节**(`WHISPER_PROMPT_BUDGET_BYTES`);Qwen3-ASR 路径改用 system message context(≤**8000 字符**,`buildQwenContext`)。
+  - `projectContext` ≤ **2000 字符**(项目名/当前文件+语言/当前文件符号 top **30**/工作区高频标识符 top **100**/相关文件,保留原始大小写)——**只喂给改写阶段**,不发给 ASR。
+- Whisper 路径 `initial_prompt`:previousTranscript 末 **300 字** + 中文引导句 + 顿号拼接词表,UTF-8 预算 **800 字节**(`WHISPER_PROMPT_BUDGET_BYTES`)。**Qwen3-ASR 请求为纯音频**(不注入任何文本偏置)——阿里云官方 API 参考未证实同步接口(`multimodal-generation`)支持文本级 context/corpus 参数(唯一线索是另一个异步接口示例里一行被注释掉的 `parameters.corpus.text`);早期用 `system` 角色消息塞偏置文本的实现曾在生产环境被模型原样"读出来"当成转写结果返回(prompt-injection 式污染),已彻底移除,标识符校正改在改写阶段(`buildRewriteUserMessage` 携带 keywords + projectContext)进行。
 - 音频:MP3、16kHz、单声道、**64kbps**;录音上限 `vibefox.maxRecordSeconds` 默认 **25s**(可调至 600s);Worker 拒收 base64:免费档 >**4MB**、质量档 >**8MB**(413)。
 - **协议 v2**:请求 `{audio, language?, keywords?, projectContext?, previousTranscript?, rewriteMode, enginePreference?}`;响应 `{text, duration_ms, rawText, finalText, tier, engines, timings, fallback?}`;`rewriteMode` 存在即 v2,v1 `llmCorrect:true→clean`,`llmPrompt`/`llmModel` 忽略。
 - **引擎路由**:tier 由 KV metadata `plan:"pro"` 决定;质量档 ASR = `qwen3-asr-flash`(亚太 `dashscope-intl` / 美国 `dashscope-us` + `qwen3-asr-flash-us`,按 `request.cf.continent`,**8s** 超时,`enable_itn:true`)降级 CF Whisper(**20s** race);改写 = `claude-haiku-4-5`(**10s** 超时,`temperature:0`,max_tokens≈3×输入)降级 `@cf/meta/llama-3.1-8b-instruct` 降级原文;**<10 字符跳过改写**。

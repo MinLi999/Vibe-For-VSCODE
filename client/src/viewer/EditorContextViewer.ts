@@ -8,7 +8,9 @@
 import * as vscode from 'vscode';
 
 const RECENT_FILE_LIMIT = 15;
-const FIND_EXCLUDE = '**/{node_modules,dist,out,.git}/**';
+// Directory excludes use `/**`; lock files are excluded as bare filenames (see
+// services/WorkspaceContextService.ts for why a trailing /** never matches a plain file).
+const FIND_EXCLUDE = '{**/node_modules/**,**/dist/**,**/out/**,**/.git/**,**/package-lock.json,**/yarn.lock,**/pnpm-lock.yaml}';
 
 /** Structurally identical to models/VocabularyModel's DocumentContext — declared locally so the
  *  viewer never imports the Model layer (02-STANDARDS §2); TypeScript's structural typing bridges them. */
