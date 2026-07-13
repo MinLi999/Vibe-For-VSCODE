@@ -2,8 +2,12 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 3.1 修复 Haiku"拒绝处理非技术内容"严重 bug,已部署上线 (2026-07-13)。
-**健康度**:🟢 双端编译/typecheck 全绿,已部署冒烟通过。⚠️ 待办:用户复测验证拒绝行为是否根除;继续验证 avfoundation 静音修复效果。
+**阶段**:Phase 3.2 avfoundation 设备打开失败自动重试,已打包待复测 (2026-07-13)。
+**健康度**:🟢 双端编译/typecheck 全绿。⚠️ 待办:用户复测验证"ffmpeg exited abnormally code 251"是否消失;继续验证 Haiku 拒绝行为修复与 avfoundation 静音修复效果。
+- 2026-07-13(用户报告"多次 ffmpeg exited abnormally code 251",拿到完整 stderr 后确诊并修复):完整错误文本是 `audio format is not supported` / `Error opening input: Input/output error` / `Error opening input file :default.`——**决定性证据**:这是启动阶段打不开 avfoundation 麦克风设备,不是录音中途设备断开,跟此前"设备释放延迟"是同一根因,只是这次触发成硬报错而不是静默空录音;说明之前那个 400ms 固定等待不够保险。
+  修复:`AudioRecorderService.start()` 重构为**确认式重试**——不再用固定 300ms/2s 超时猜测启动是否成功,改为竞速"第一个真实 stdout 数据块"(=设备真的打开了)against"进程退出"(=打开失败),最长等 1.5s;打开失败时自动等 700ms 重试一次,对用户完全透明(不用他们手动等一下再按)。`this.child` 改为在 `trySpawn` 里 spawn 后立即同步赋值,让 `cancel()`/`stop()` 在重试等待窗口内也能正确作用于正在起飞的进程;新增内部 `RecorderCancelledError` 区分"取消导致的失败"(不重试、不报错)和"真失败"(重试或最终报错)。
+  之前"拉大 `-t` 安全边际(+2s→+15s)"的尝试是误判方向(以为是录音中途的定时器竞态),已在同一版本里保留(仍是良性加固,不影响本次修复)但不是本次问题的真正原因。
+  **本次未部署 server、只改了 client**;已 typecheck+compile+package(`.vsix`),DoD 分层检查全绿,commit 待做。
 - 2026-07-13(**严重 bug,已修复**):用户用非技术内容(闲聊、故事、英文测试句)压测改写引擎,发现 Claude Haiku 4.5 会主动判断"这段内容跟项目/编程无关",然后**把拒绝理由当正文输出**,直接会插入用户聊天框,例如:
   - 输入"这个东西就是白天逃跑的尸体…" → Haiku 输出"我无法理解这段输入的技术含义…请提供与项目相关的语音转写内容。"
   - 输入"Hiking. Do you like hiking?" → Haiku 输出"这段输入不是程序员的技术口述…输出空字符串。"(甚至把"输出空字符串"这个元指令当文字吐出来,没有真的输出空串)
