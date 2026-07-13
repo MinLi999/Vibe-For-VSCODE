@@ -34,7 +34,7 @@
     "DASHSCOPE_BASE_URL_US": "https://dashscope-us.aliyuncs.com",
     "QWEN_MODEL_APAC": "qwen3-asr-flash",
     "QWEN_MODEL_US": "qwen3-asr-flash-us",
-    // 评估用改写引擎(与 Haiku 并行跑对比,不需要区域后缀)
+    // 主力改写引擎(经多日 Haiku 对比后选定:质量相当、便宜 3-4 倍;不需要区域后缀)
     "QWEN_REWRITE_MODEL": "qwen-plus"
   },
 
