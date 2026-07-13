@@ -287,7 +287,9 @@ export class AudioRecorderService {
     // ASR's call, and the Controller silently skips empty transcriptions.
     if (remainingPcm && remainingPcm.byteLength > 3200 * 2) {
       try {
-        const mp3 = await this.compressToMp3(remainingPcm, this.lastFfmpegPath);
+        // Killing ffmpeg can cut the stream mid-sample; trim to the s16le sample grid.
+        const aligned = remainingPcm.byteLength % 2 === 0 ? remainingPcm : remainingPcm.slice(0, remainingPcm.byteLength - 1);
+        const mp3 = await this.compressToMp3(aligned, this.lastFfmpegPath);
         return mp3;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -339,8 +341,12 @@ export class AudioRecorderService {
       const vadMinDurationMs = options.vadMinDurationMs ?? 3000;
 
       if (this.silentTimeMs >= vadSilenceMs) {
-        const silenceBytes = this.silentTimeMs * 32;
-        const segmentLength = this.totalPcmBytes - silenceBytes;
+        // CRITICAL: the split offset MUST land on the 2-byte s16le sample grid. silentTimeMs is a
+        // float accumulation, so silentTimeMs*32 can be fractional/odd; slicing the stream at an
+        // odd byte offset byte-swaps EVERY subsequent sample (violent metallic-grinding noise) and,
+        // because the trailing buffer seeds the next segment, corrupts the whole rest of the session.
+        const silenceBytes = Math.min(this.totalPcmBytes, Math.floor((this.silentTimeMs * 32) / 2) * 2);
+        const segmentLength = Math.max(0, Math.floor((this.totalPcmBytes - silenceBytes) / 2) * 2);
 
         if (segmentLength >= vadMinDurationMs * 32) {
           const allPcm = Buffer.concat(this.pcmChunks);

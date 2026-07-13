@@ -2,8 +2,14 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 2.5「超越竞品」双引擎重构完成,已部署上线 (2026-07-12)。
-**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿,线上冒烟(401/403/404)通过。⚠️ 待办:质量档真实语音端到端验证(用户反馈的两个 bug 已修复,待用户重新用真实语音复测)。
+**阶段**:Phase 2.6 实测缺陷五连修完成,已部署上线 (2026-07-12)。
+**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿,过滤器 12 用例 + 对齐 10000 次 fuzz 全过,线上冒烟通过。⚠️ 待办:用户真实语音复测五个症状。
+- 2026-07-12(**用户实测反馈的五个症状,全部定位根因并修复**):
+  ① **"机械噪音/金属摩擦声"幻觉(最严重)**:根因是 `AudioRecorderService.processPcmChunk` 的 VAD 切分偏移 `silenceBytes = silentTimeMs * 32` 为浮点累加,`Buffer.slice` 在**奇数字节**处切开 s16le 流 → 之后每个 16-bit 采样高低字节互换(听感=剧烈金属摩擦声),且错位的 trailing buffer 作为下一段开头**传染整个会话**——这就是"第一段偶尔成功、后面全废"。修复:切分偏移强制 2 字节采样对齐(`Math.floor(x/2)*2`),`stop()` 尾段同样对齐;10000 次随机 fuzz 验证偏移恒为偶数且有界。
+  ② **"..."空转写**:ASR 对静音输出省略号/字幕水印幻觉。新增双端同步的 `isNonSpeechTranscript` 过滤器(纯标点、整句括号包裹的场景描述、"音频中…"开头的旁白、短句字幕垃圾),服务端命中直接 502(省改写费用),客户端在改写/符号规则**之前**过滤(避免误杀"等号"→"="),12 组正反用例全过;非 VAD 场景的报错从"转写失败"toast 改为状态栏"未识别到语音,请重试"。
+  ③ **打开 Copilot Chat 而非 Claude Code**:旧 `intoChat` 盲发一串命令,列表里根本没有 Claude Code,而 `workbench.action.chat.open` 是内置命令永远"成功"→必然劫持到 Copilot。修复:读取本机已装扩展 manifest 确认真实命令 id(`claude-vscode.focus` = "Claude Code: Focus input"),置于优先级首位;改用 `getCommands(true)` 只调用真实注册的命令;Copilot 兜底必须先确认 `github.copilot-chat` 已安装;全都没有则诚实返回 clipboard(不盲贴)。
+  ④ **按住热键报错**:OS 按键重复(~50ms/次)高频触发 toggle → start/stop 互撞。修复:`toggle()` 加 400ms 去抖。
+  ⑤ **改写模式不好用**:主要是①②的垃圾输入连带污染(错位音频→幻觉文本→污染 previousTranscript 上下文);另在两套服务端 prompt 与客户端兜底 prompt 中补充"噪音描述输出空字符串"规则。已重新部署 Worker + 重打包 vsix。
 - 2026-07-12(**用户报告的严重 bug,已修复**):用户反馈聊天框里出现"【项目词表(代码标识符,注意大小写)】"字样后跟一长串明显是 package-lock.json 依赖字段的词(https/license/integrity/sha512/libvips/workerd 等),且识别精度不高。排查出两个根因,均已修复:
   ① **`client/src/services/WorkspaceContextService.ts` 的 `FIND_EXCLUDE` glob 写错**:把 `package-lock.json`/`yarn.lock`/`pnpm-lock.yaml` 塞进 `**/{...}/**` 目录排除模式里,这种写法只能排除同名**文件夹**,排除不了**文件本身**——用 `minimatch` 实测验证旧模式确实排除不掉这三个锁文件。导致 149KB 的 `package-lock.json` 被整个当"代码"扫描,依赖包字段被当成"高频项目标识符"喂进请求,挤占了真实项目词表的名额(直接拖累精度)。已改写为 `{**/dir/**,...,**/package-lock.json,**/npm-shrinkwrap.json,**/yarn.lock,**/pnpm-lock.yaml}` 形式的正确排除(`EditorContextViewer.ts` 同步修复),`minimatch` 实测验证新模式排除正确且不误伤真实源码。
   ② **Qwen3-ASR 请求方式本身有问题(真正导致文本泄漏进聊天框的原因)**:早期实现把项目词表/背景塞进 DashScope `multimodal-generation` 接口的 `system` 角色聊天消息里,当作"上下文增强"传给 ASR。重新核查阿里云官方 API 参考后发现**这个用法从未被文档证实支持**——官方文档里唯一沾边的线索是另一个**异步文件转写接口**(不同的 endpoint/model)示例代码里一行**被注释掉**的 `parameters.corpus.text`。模型显然把我们塞的这段"偏置说明文字"当成了要处理的对话内容,直接原样"读"出来当转写结果返回,造成聊天框里出现内部提示词原文的严重体验事故。修复:**彻底移除**这个未经证实且已实锤造成污染的机制,Qwen3-ASR 请求改为纯音频(不注入任何文本);词表/项目背景的校正职责转移到已验证安全的改写阶段(`server/src/prompts.ts` `buildRewriteUserMessage` 携带 keywords + projectContext,交给 Haiku/Qwen-Plus 这类文本 LLM 处理,这条路径不会有"把提示词读出来"的风险)。
