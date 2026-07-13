@@ -162,6 +162,17 @@ export class AudioRecorderService {
   private lastStoppedAtMs = 0;
   /** One-shot per session: reap orphaned capture processes left by a previous extension host. */
   private orphansCleaned = false;
+  /**
+   * Loudest 16-bit PCM chunk average seen this recording session (VAD path only, reset in start()).
+   * Lets the Controller distinguish "mic delivered silence" (intermittent macOS avfoundation
+   * capture failure → whole recording near-zero) from "real audio the ASR couldn't read".
+   */
+  private sessionPeakAmplitude = 0;
+
+  /** Loudest chunk amplitude captured this session (0 when VAD is off — no PCM to measure). */
+  get peakAmplitude(): number {
+    return this.sessionPeakAmplitude;
+  }
 
   get isRecording(): boolean {
     return this.child !== null;
@@ -227,6 +238,7 @@ export class AudioRecorderService {
     this.adaptiveEnabled = options.vadAdaptiveThreshold ?? true;
     this.noiseFloor = null;
     this.observedMs = 0;
+    this.sessionPeakAmplitude = 0;
     this.onSegmentError = options.onSegmentError;
 
     const isVad = Boolean(options.vadEnabled && options.onSegment);
@@ -457,6 +469,7 @@ export class AudioRecorderService {
       }
       const average = sum / numSamples;
       const durationMs = chunk.byteLength / 32;
+      this.sessionPeakAmplitude = Math.max(this.sessionPeakAmplitude, average);
 
       const silenceThreshold = this.updateAdaptiveThreshold(average, durationMs);
       if (average < silenceThreshold) {
