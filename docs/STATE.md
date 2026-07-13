@@ -2,8 +2,14 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 3.4 Qwen-Plus 转正为主力改写引擎 + 中文四变体 + 地区手动选择,上线前审查完成 (2026-07-13)。
-**健康度**:🟢 双端 typecheck/compile、DoD 分层 grep、23 个设置双向一致性、服务端日志零内容泄漏审查全部通过。⚠️ 待办:用户复测 code 251 修复 + 新功能(变体/地区)验证。
+**阶段**:Phase 3.5 单引擎化(移除 Haiku/对比)+ Qwen prompt 强化,上线前收尾 (2026-07-13)。
+**健康度**:🟢 双端 typecheck/compile 全绿,无 Haiku/对比残留(排除 claude-code 扩展 ID)。⚠️ 待办:用户复测;商业化(定价/大陆策略)决策见下。
+- 2026-07-13(用户拍板单引擎 + 研究地区/大陆/定价):
+  ① **移除 Haiku + 对比功能**:改写链简化为 `qwen-plus` → `cf-llama` → 原文(质量档),`cf-whisper` + `cf-llama`(免费档)。删除 anthropicRewrite.ts、RewriteComparisonViewer.ts、ANTHROPIC_API_KEY(secret 可 `wrangler secret delete`)、compareRewrite/rewriteComparison 协议字段、vibefox.rewriteCompareEnabled 设置。全程走阿里云 DashScope,只需两把区域 key。
+  ② **Qwen prompt 强化**:针对 Qwen 仍会丢"那个等号写错的地方"这类限定/定位分句的倾向,澄清"那个/这个"作口头停顿 vs 作真实名词短语限定词的区别(后者绝不能连短语删),clean 规则 7 补入该真实失败反例。
+  ③ **地区研究结论(重要,影响可行性)**:查阿里云官方文档确认 `qwen3-asr-flash` 国际上**只在新加坡 + 美国(Virginia)两区**提供;东京、法兰克福在 DashScope 端点明确"Not supported",香港有域名但 ASR 可用性无文档。故"加入所有非大陆区"对 ASR 不可行——Singapore(APAC)+ US 已是完整国际集合,EU/AF/NA/SA 路由到美国区是正确的(没有欧洲 ASR 端点可去)。当前 auto/apac/us 手动选择已是现实最优,未新增死路由。
+  ④ **大陆策略结论**:真正阻碍不是 API key,而是 **Cloudflare Worker 在大陆被墙/极慢** + 北京区需中国实体+ICP。建议:不做独立插件(插件本身通用);v1 先不服务大陆,聚焦海外华语开发者(星马/台港/海外华人);将来若做大陆,需在国内(阿里云北京 FC/腾讯云)部署平行后端 + 北京区 key + 插件加一个区域端点切换,同一插件不同 endpoint。
+  ⑤ **定价建议**:见与用户对话。COGS 估算:典型用户 $3-8/月、重度 $15-30/月;建议订阅 **$9-12/月**(或年付 8 折),免费档限量引流;**需要用量护栏**(已有 per-key 限流 free 10/pro 40 次/分;另建议月度公平使用软上限防滥用)。
 - 2026-07-13(用户拍板 + 三个新功能,均已实现):
   ① **Qwen-Plus 转正**(用户决策,成本导向):质量档改写链变为 `qwen-plus`(主力,复用 ASR 的区域 key 与双区路由)→ `claude-haiku-4-5`(兜底)→ CF llama → 原文。三批真实样本评审结论:质量基本打平(Haiku 逐句保留略稳、Qwen 标识符还原略强但有轻度精简惯性),成本 Qwen 便宜 3~4 倍($0.4/$1.2 vs $1/$5 每百万 token)。`compareRewrite` 影子改跑 Haiku,响应字段改为通用 `rewriteComparison.alt*`,对比面板改名「VibeFox: Rewrite Comparison」。
   ② **中文繁简四变体**:`vibefox.chineseVariant` = simplified-cn(默认)/ simplified-sg-my / traditional-tw / traditional-hk-mo;由改写阶段 system prompt 后缀实现(`withChineseVariant`),`rewriteMode:'off'` 不生效,英文/代码不受影响;客户端兜底 prompt 同步支持。

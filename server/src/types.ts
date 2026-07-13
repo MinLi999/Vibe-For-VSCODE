@@ -19,8 +19,6 @@ export interface Env {
    */
   DASHSCOPE_API_KEY_APAC?: string;
   DASHSCOPE_API_KEY_US?: string;
-  /** Anthropic API key — `wrangler secret put ANTHROPIC_API_KEY`. */
-  ANTHROPIC_API_KEY?: string;
   /** Region-aware DashScope endpoints/models (wrangler.jsonc vars; see resolveQwenRegion). */
   DASHSCOPE_BASE_URL_APAC?: string;
   DASHSCOPE_BASE_URL_US?: string;
@@ -36,8 +34,8 @@ export interface Env {
 export type RewriteMode = 'off' | 'clean' | 'rewrite';
 export type Tier = 'quality' | 'free';
 export type AsrEngine = 'qwen3-asr-flash' | 'cf-whisper-large-v3-turbo';
-/** Primary rewrite chain (quality tier): qwen-plus → claude-haiku-4-5 → cf-llama → raw text. */
-export type RewriteEngine = 'qwen-plus' | 'claude-haiku-4-5' | 'cf-llama-3.1-8b-instruct' | 'none';
+/** Rewrite chain: qwen-plus (quality) → cf-llama (free tier + edge fallback) → raw text. */
+export type RewriteEngine = 'qwen-plus' | 'cf-llama-3.1-8b-instruct' | 'none';
 /** Output Chinese variant: script + regional idiom, applied by the rewrite stage. */
 export type ChineseVariant = 'simplified-cn' | 'simplified-sg-my' | 'traditional-tw' | 'traditional-hk-mo';
 /** Manual DashScope region override; 'auto' = continent-based routing (request.cf.continent). */
@@ -66,12 +64,6 @@ export interface TranscribeRequestBody {
   enginePreference?: 'auto' | 'cloudflare';
   /** v1 compatibility (maps to rewriteMode 'clean' when true). */
   llmCorrect?: boolean;
-  /**
-   * Evaluation-only: shadow-run the alternative rewrite engine (Haiku, now that Qwen-Plus is
-   * primary) alongside the primary chain for side-by-side comparison (quality tier only;
-   * never affects `finalText`/`text`, only `rewriteComparison`).
-   */
-  compareRewrite?: boolean;
   /** Output Chinese script/idiom variant (applied by the rewrite stage; default simplified-cn). */
   chineseVariant?: ChineseVariant;
   /** Manual DashScope region override (default 'auto' = continent-based). */
@@ -91,10 +83,8 @@ export interface TranscribeResponseBody {
   tier: Tier;
   engines: { asr: AsrEngine; rewrite: RewriteEngine };
   timings: { asr_ms: number; rewrite_ms: number; total_ms: number };
-  /** Downgrade reason codes when an engine fell back, e.g. "dashscope_timeout", "anthropic_http_529". */
+  /** Downgrade reason codes when an engine fell back, e.g. "dashscope_timeout", "qwen_rewrite_http_429". */
   fallback?: { asr?: string; rewrite?: string };
-  /** Present only when the request set `compareRewrite: true` — the shadow (alternative) engine's rewrite for comparison. */
-  rewriteComparison?: { altEngine?: string; altText?: string; altMs?: number; altError?: string };
 }
 
 /** Error response (unified shape for all non-2xx). */

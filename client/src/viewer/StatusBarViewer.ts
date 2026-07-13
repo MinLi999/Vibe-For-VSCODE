@@ -98,7 +98,7 @@ export class StatusBarViewer implements vscode.Disposable {
     this.flashTimer = setTimeout(() => this.showIdle(), 2500);
   }
 
-  /** Session-end consolidated feedback: "✓ 86字(3段) · Qwen3+Haiku · 1.4s". */
+  /** Session-end consolidated feedback: "✓ 86字(3段) · Qwen3+Qwen · 1.4s". */
   flashResultWithStats(stats: SessionStats): void {
     const seconds = (stats.totalMs / 1000).toFixed(1);
     const segmentPart = stats.segments > 1 ? `(${stats.segments}段)` : '';

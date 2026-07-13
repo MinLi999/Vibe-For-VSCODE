@@ -9,7 +9,6 @@ import { VocabularyModel } from './models/VocabularyModel';
 import { StatusBarViewer } from './viewer/StatusBarViewer';
 import { TextInserter } from './viewer/TextInserter';
 import { EditorContextViewer } from './viewer/EditorContextViewer';
-import { RewriteComparisonViewer } from './viewer/RewriteComparisonViewer';
 import { AudioRecorderService } from './services/AudioRecorderService';
 import { CloudflareApiService } from './services/CloudflareApiService';
 import { WorkspaceContextService } from './services/WorkspaceContextService';
@@ -25,7 +24,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const statusBar = new StatusBarViewer(() => keybindingLookup.getActiveKeybinding());
   const inserter = new TextInserter();
   const editorContext = new EditorContextViewer();
-  const rewriteComparison = new RewriteComparisonViewer();
   const workspaceContext = new WorkspaceContextService();
 
   const recorder = new AudioRecorderService();
@@ -44,11 +42,10 @@ export function activate(context: vscode.ExtensionContext): void {
     workspaceContext,
     systemPaste,
     keybindingLookup,
-    rewriteComparison,
   );
   controller.registerCommands(context);
 
-  context.subscriptions.push(statusBar, editorContext, rewriteComparison, workspaceContext, controller);
+  context.subscriptions.push(statusBar, editorContext, workspaceContext, controller);
 }
 
 export function deactivate(): void {
