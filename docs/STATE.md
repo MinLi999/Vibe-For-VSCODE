@@ -2,8 +2,13 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 2.6 实测缺陷五连修完成,已部署上线 (2026-07-12)。
-**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿,过滤器 12 用例 + 对齐 10000 次 fuzz 全过,线上冒烟通过。⚠️ 待办:用户真实语音复测五个症状。
+**阶段**:Phase 2.7 第二轮实测缺陷修复完成,已部署上线 (2026-07-12)。
+**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿,dedupe 4 用例全过,线上冒烟通过。⚠️ 待办:用户真实语音复测(重点:长录音多分段无重复句、按住热键即录、快速点按不再报错)。
+- 2026-07-12(第二轮实测反馈,四个症状全部修复):
+  ① **句子重复**("你现在需要调整几点…"一字不差出现两次):根因是 previousTranscript 被喂进 Whisper `initial_prompt` 与改写 LLM 的用户消息做"衔接"——Whisper 在接近静音的音频上会把 prompt 原文当转写结果吐出(著名失效模式),改写 LLM 也偶尔无视"禁止重复输出"照抄。修复:**从所有 prompt 向量中彻底移除 previousTranscript**(服务端 buildInitialPrompt/buildRewriteUserMessage、客户端各直连 provider 的 prompt 构建),会话转写只留在客户端;另加确定性兜底 `dedupeAgainstSession`(归一化整段回声消除 + ≥8 字符后缀-前缀重叠裁剪,4 组正反用例含用户原始样本全过)。
+  ② **按住热键仍报错 + 用户要求按住即录**:上一轮的 400ms 盲目去抖对"按住"反而有害——每 400ms 放行一个事件变成 start/stop 交替,撞出"没有录到音频"与 `invalid state transition: idle→processing`(后者是 stopAndTranscribe 在 `await recorder.stop()` 期间被并发重入)。重写为**双语义热键状态机**:录音中首个事件先armed 350ms pending-stop 窗口,窗口内再来事件即判定为 OS 按键自动重复(=按住)→ 进入 hold 模式,重复事件停止 650ms(=松手)才触发停止——**点按=开关,按住=对讲**一个键位同时支持;并加 isStopping 重入锁、await 后 phase 复查、<700ms 的最短录音时长保障(ffmpeg 启动需 ~300ms)。
+  ③ **程序"卡住"10 多秒后成功**:实际是 Qwen 超时(8s)→ Whisper 兜底的降级链总时长,用户看到的是静止的 spinner。Qwen 超时收紧到 6s,转写超过 6s 状态栏改显"转写中…(网络较慢或引擎切换中)"。
+  ④ **两模型对比查看方法**:开 `vibefox.rewriteCompareEnabled` → Output 面板选「VibeFox: Rewrite Comparison (Haiku vs Qwen)」。
 - 2026-07-12(**用户实测反馈的五个症状,全部定位根因并修复**):
   ① **"机械噪音/金属摩擦声"幻觉(最严重)**:根因是 `AudioRecorderService.processPcmChunk` 的 VAD 切分偏移 `silenceBytes = silentTimeMs * 32` 为浮点累加,`Buffer.slice` 在**奇数字节**处切开 s16le 流 → 之后每个 16-bit 采样高低字节互换(听感=剧烈金属摩擦声),且错位的 trailing buffer 作为下一段开头**传染整个会话**——这就是"第一段偶尔成功、后面全废"。修复:切分偏移强制 2 字节采样对齐(`Math.floor(x/2)*2`),`stop()` 尾段同样对齐;10000 次随机 fuzz 验证偏移恒为偶数且有界。
   ② **"..."空转写**:ASR 对静音输出省略号/字幕水印幻觉。新增双端同步的 `isNonSpeechTranscript` 过滤器(纯标点、整句括号包裹的场景描述、"音频中…"开头的旁白、短句字幕垃圾),服务端命中直接 502(省改写费用),客户端在改写/符号规则**之前**过滤(避免误杀"等号"→"="),12 组正反用例全过;非 VAD 场景的报错从"转写失败"toast 改为状态栏"未识别到语音,请重试"。

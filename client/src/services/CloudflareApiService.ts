@@ -133,27 +133,25 @@ export class CloudflareApiService {
     throw new ApiError('server', '转写服务返回了非预期的响应形态', response.status);
   }
 
-  async transcribeGroq(apiKey: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
+  async transcribeGroq(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
     return this.transcribeOpenAICompatible(
       'https://api.groq.com/openai/v1/audio/transcriptions',
       apiKey,
       'whisper-large-v3',
       audioBase64,
       language,
-      keywords,
-      previousTranscript
+      keywords
     );
   }
 
-  async transcribeOpenAI(apiKey: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
+  async transcribeOpenAI(apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
     return this.transcribeOpenAICompatible(
       'https://api.openai.com/v1/audio/transcriptions',
       apiKey,
       'whisper-1',
       audioBase64,
       language,
-      keywords,
-      previousTranscript
+      keywords
     );
   }
 
@@ -163,8 +161,7 @@ export class CloudflareApiService {
     model: string,
     audioBase64: string,
     language: string,
-    keywords: string[],
-    previousTranscript?: string
+    keywords: string[]
   ): Promise<string> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -178,11 +175,9 @@ export class CloudflareApiService {
       formData.append('language', language);
       formData.append('temperature', '0');
 
+      // NOTE: previousTranscript is deliberately NOT prepended here — Whisper is known to echo
+      // its prompt back verbatim on near-silent audio, which duplicated already-inserted sentences.
       let promptVal = '';
-      if (previousTranscript && previousTranscript.trim().length > 0) {
-        promptVal += previousTranscript.trim().slice(-300) + '。';
-      }
-
       if (keywords.length > 0) {
         // Whisper treats prompt as "preceding transcript text", not instructions.
         const prefix = '好的，我现在打开了项目。刚才看了一下代码，里面用到了 ';
@@ -301,7 +296,7 @@ export class CloudflareApiService {
     }
   }
 
-  async transcribeAliyun(endpoint: string, apiKey: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
+  async transcribeAliyun(endpoint: string, apiKey: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
     const baseUrl = endpoint.trim().length > 0
       ? endpoint.replace(/\/+$/, '')
       : 'https://dashscope.aliyuncs.com';
@@ -461,7 +456,7 @@ export class CloudflareApiService {
     return text.trim();
   }
 
-  async transcribeCustom(endpoint: string, audioBase64: string, language: string, keywords: string[], previousTranscript?: string): Promise<string> {
+  async transcribeCustom(endpoint: string, audioBase64: string, language: string, keywords: string[]): Promise<string> {
     const url = endpoint.replace(/\/+$/, '');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -476,7 +471,6 @@ export class CloudflareApiService {
           audio: audioBase64,
           language,
           keywords,
-          previousTranscript,
         }),
         signal: controller.signal,
       });

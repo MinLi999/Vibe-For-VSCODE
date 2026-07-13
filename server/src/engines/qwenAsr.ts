@@ -3,10 +3,11 @@ import type { Env } from '../types';
 import { resolveDashscopeRegion } from './dashscopeRegion';
 
 /**
- * Qwen3-ASR normally answers a 10s utterance in 1-2s; 8s is already pathological,
- * so we cut over to the Cloudflare-edge Whisper fallback instead of keeping the user waiting.
+ * Qwen3-ASR normally answers a 10s utterance in 1-2s; 6s is already pathological, so we cut
+ * over to the Cloudflare-edge Whisper fallback instead of keeping the user staring at a
+ * spinner (the fallback chain is what "the app froze for 10+ seconds" reports came from).
  */
-const QWEN_TIMEOUT_MS = 8_000;
+const QWEN_TIMEOUT_MS = 6_000;
 
 export interface QwenRegion {
   baseUrl: string;
