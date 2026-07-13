@@ -185,6 +185,21 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
   // skipping the rewrite stage saves its cost, and the 502 message keeps the exact substrings
   // ("no text"/"silent") the client's silent-skip matcher looks for.
   if (rawText.length === 0 || isNonSpeechTranscript(rawText)) {
+    // This 502 branch previously logged NOTHING (only the success path and truly-uncaught
+    // exceptions did) — wrangler tail's "Ok"/"Error" badge reflects whether the Worker threw an
+    // UNCAUGHT exception, not the HTTP status code, so a clean 502 Response looked identical to
+    // a success in the tail output. Content-free diagnostic so intermittent "未识别到语音"
+    // reports are actually debuggable instead of invisible.
+    console.log(
+      `transcribe no_speech owner=${auth.metadata?.owner ?? 'unknown'} tier=${tier}` +
+        ` asr=${asrEngine} asr_ms=${asrMs} raw_len=${rawText.length}` +
+        ` filtered=${rawText.length > 0 && isNonSpeechTranscript(rawText)}` +
+        // Tiny base64 length = the client genuinely captured almost no audio (real capture bug);
+        // a normal-sized payload that both engines still read as silent points at content, not
+        // transport — distinguishes "nothing was recorded" from "recorded audio was silent".
+        ` audio_b64_len=${body.audio.length}` +
+        (fallback.asr ? ` asr_fallback=${fallback.asr}` : ''),
+    );
     throw new HttpError(502, 'Transcription produced no text (silent or non-speech audio)');
   }
 
