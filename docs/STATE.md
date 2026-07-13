@@ -2,8 +2,13 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 3.3 孤儿 ffmpeg 进程回收 + 悬挂设备打开判定修正,已打包待复测 (2026-07-13)。
-**健康度**:🟢 client typecheck/compile/分层 grep 全绿。⚠️ 待办:用户装新 vsix 复测"刚打开扩展第一次录音就 code 251"是否消失。
+**阶段**:Phase 3.4 Qwen-Plus 转正为主力改写引擎 + 中文四变体 + 地区手动选择,上线前审查完成 (2026-07-13)。
+**健康度**:🟢 双端 typecheck/compile、DoD 分层 grep、23 个设置双向一致性、服务端日志零内容泄漏审查全部通过。⚠️ 待办:用户复测 code 251 修复 + 新功能(变体/地区)验证。
+- 2026-07-13(用户拍板 + 三个新功能,均已实现):
+  ① **Qwen-Plus 转正**(用户决策,成本导向):质量档改写链变为 `qwen-plus`(主力,复用 ASR 的区域 key 与双区路由)→ `claude-haiku-4-5`(兜底)→ CF llama → 原文。三批真实样本评审结论:质量基本打平(Haiku 逐句保留略稳、Qwen 标识符还原略强但有轻度精简惯性),成本 Qwen 便宜 3~4 倍($0.4/$1.2 vs $1/$5 每百万 token)。`compareRewrite` 影子改跑 Haiku,响应字段改为通用 `rewriteComparison.alt*`,对比面板改名「VibeFox: Rewrite Comparison」。
+  ② **中文繁简四变体**:`vibefox.chineseVariant` = simplified-cn(默认)/ simplified-sg-my / traditional-tw / traditional-hk-mo;由改写阶段 system prompt 后缀实现(`withChineseVariant`),`rewriteMode:'off'` 不生效,英文/代码不受影响;客户端兜底 prompt 同步支持。
+  ③ **DashScope 地区手动选择**:`vibefox.dashscopeRegion` = auto(默认,按大洲)/ apac / us;协议 v2 加 `regionPreference`,`resolveDashscopeRegion` 手动优先;ASR 与改写共用同一路由。
+  ④ 上线前审查:分层 grep 全绿、M/V/S 零互引、无密钥泄漏、v2 不收客户端 prompt/model、23 个设置声明↔读取双向一致、服务端 4 处日志逐条审查(只含引擎/耗时/长度/原因码,零转写内容)。
 - 2026-07-13(Phase 3.2 修复后用户仍复现 code 251,且明确发生在"刚点开时"——第一次录音,进一步确诊出两个漏洞,均已修复):
   ① **孤儿 ffmpeg 霸占麦克风(真凶)**:我们 spawn ffmpeg 用了 `detached: true`(更早为修"IDE 音频采样率锁定"特意加的),副作用是**窗口重载/更新 .vsix 杀掉扩展宿主时,正在跑的 ffmpeg 不会跟着死**,孤儿进程继续持有麦克风直到自己的 `-t` 时限(现在长达 ~40s)到期——新会话第一次录音必然打不开设备(avfoundation `Error opening input: Input/output error`),"等一会再试就好"= 等孤儿自己超时退出。修复:`reapOrphanCaptures()`——每会话第一次录音前用 `pkill -f 'ffmpeg.*avfoundation.*-ar 16000.*pipe:1'` 回收孤儿(模式匹配我们独有的参数组合,不会误杀用户自己的 ffmpeg 任务;pkill 退出码 1=无匹配,非错误)。
   ② **Phase 3.2 重试逻辑里的一个事实错误**:当时的 confirm 窗口在 1.5s 无数据时"当作启动成功放行"(以为环境安静就没有数据)——错了,**ffmpeg 一旦真正打开设备,即使纯静音也会持续输出 PCM/MP3 字节流**,"没有数据"本身就是启动失败的铁证。慢于 1.5s 的设备打开失败会漏过重试直接把 onError 甩给用户(这正好解释了用户看到的报错格式没有"录音启动失败"前缀)。修复:confirm 窗口改为 4s,超时无数据判定为"设备打开悬挂"→ 杀进程 → reject → 走重试,不再当成功放行。

@@ -6,9 +6,11 @@ import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
 import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
 import { HttpError, toReasonCode } from './errors';
 import { isNonSpeechTranscript } from './nonspeech';
-import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT } from './prompts';
+import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT, withChineseVariant } from './prompts';
 import type {
+  ChineseVariant,
   Env,
+  RegionPreference,
   RewriteMode,
   Tier,
   TranscribeRequestBody,
@@ -31,6 +33,8 @@ const MIN_REWRITE_CHARS = 10;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const LANGUAGE_PATTERN = /^[a-z]{2}$/;
 const REWRITE_MODES: readonly RewriteMode[] = ['off', 'clean', 'rewrite'];
+const CHINESE_VARIANTS: readonly ChineseVariant[] = ['simplified-cn', 'simplified-sg-my', 'traditional-tw', 'traditional-hk-mo'];
+const REGION_PREFERENCES: readonly RegionPreference[] = ['auto', 'apac', 'us'];
 
 /**
  * Assembles the client's keyword list into Whisper's initial_prompt:
@@ -72,6 +76,8 @@ interface ParsedRequest {
   rewriteMode: RewriteMode;
   enginePreference: 'auto' | 'cloudflare';
   compareRewrite: boolean;
+  chineseVariant: ChineseVariant;
+  regionPreference: RegionPreference;
 }
 
 /**
@@ -139,8 +145,26 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
 
   const enginePreference = body['enginePreference'] === 'cloudflare' ? 'cloudflare' : 'auto';
   const compareRewrite = body['compareRewrite'] === true;
+  // Unknown values silently fall back to the defaults (forward compat with newer clients).
+  const chineseVariant = CHINESE_VARIANTS.includes(body['chineseVariant'] as ChineseVariant)
+    ? (body['chineseVariant'] as ChineseVariant)
+    : 'simplified-cn';
+  const regionPreference = REGION_PREFERENCES.includes(body['regionPreference'] as RegionPreference)
+    ? (body['regionPreference'] as RegionPreference)
+    : 'auto';
 
-  return { audio, language, keywords, projectContext, previousTranscript, rewriteMode, enginePreference, compareRewrite };
+  return {
+    audio,
+    language,
+    keywords,
+    projectContext,
+    previousTranscript,
+    rewriteMode,
+    enginePreference,
+    compareRewrite,
+    chineseVariant,
+    regionPreference,
+  };
 }
 
 /** Core handler: validate → tier routing → ASR chain → rewrite chain → assemble v2 response. */
@@ -166,7 +190,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
   let asrEngine: TranscribeResponseBody['engines']['asr'] = 'cf-whisper-large-v3-turbo';
 
   if (tier === 'quality' && body.enginePreference !== 'cloudflare') {
-    const region = resolveQwenRegion(env, continent);
+    const region = resolveQwenRegion(env, continent, body.regionPreference);
     if (region.apiKey) {
       try {
         rawText = await qwenTranscribe(region, body.audio, body.language);
@@ -203,36 +227,52 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     throw new HttpError(502, 'Transcription produced no text (silent or non-speech audio)');
   }
 
-  // --- Rewrite stage: Haiku 4.5 (quality tier) → cf llama → raw text ---
-  // Never changes what gets returned as finalText/inserted by the client.
+  // --- Rewrite stage (quality tier): Qwen-Plus → Haiku 4.5 → cf llama → raw text ---
+  // Qwen-Plus is primary by user decision after a multi-day side-by-side comparison:
+  // ~3-4x cheaper at comparable quality, and it reuses the region-locked DashScope keys the
+  // ASR stage already requires. Haiku stays as first fallback and as the compare-mode shadow.
   let finalText = rawText;
   let rewriteEngine: TranscribeResponseBody['engines']['rewrite'] = 'none';
-  // Own timer per branch (NOT Date.now() - outer-start): the two rewrite calls run concurrently
-  // via Promise.all below, so a single outer timer would report whichever engine is SLOWER for
-  // both — comparison timings need each engine's own isolated latency.
+  // Own timer per branch (NOT Date.now() - outer-start): the primary and shadow rewrites run
+  // concurrently via Promise.all below, so a single outer timer would report whichever engine
+  // is SLOWER for both — comparison timings need each engine's own isolated latency.
   let primaryMs = 0;
 
-  // --- Shadow comparison: Qwen-Plus rewrite, run CONCURRENTLY with the primary chain so the
-  // evaluation adds ~0 sequential latency (bounded by whichever engine is slower). Never used
-  // as finalText — evaluation-only signal reported in `rewriteComparison` (see the "why Claude
-  // vs Alibaba's own model" discussion this round: cheaper Qwen-Plus reuses the same DashScope
-  // key/region already required for ASR, so this is a free-to-wire A/B, not a new dependency.
+  // Shadow comparison: run the ALTERNATIVE engine (Haiku) concurrently with the primary chain
+  // so the evaluation adds ~0 sequential latency. Never used as finalText — evaluation-only
+  // signal reported in `rewriteComparison`.
   let rewriteComparison: TranscribeResponseBody['rewriteComparison'];
 
   if (body.rewriteMode !== 'off' && rawText.trim().length >= MIN_REWRITE_CHARS) {
-    const systemPrompt = body.rewriteMode === 'rewrite' ? REWRITE_SYSTEM_PROMPT : CLEAN_SYSTEM_PROMPT;
+    const systemPrompt = withChineseVariant(
+      body.rewriteMode === 'rewrite' ? REWRITE_SYSTEM_PROMPT : CLEAN_SYSTEM_PROMPT,
+      body.chineseVariant,
+    );
     const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.projectContext);
 
     const primaryRewrite = (async () => {
       const primaryStarted = Date.now();
-      if (tier === 'quality' && env.ANTHROPIC_API_KEY) {
-        try {
-          finalText = await haikuRewrite(env, systemPrompt, userMessage);
-          rewriteEngine = HAIKU_MODEL;
-          primaryMs = Date.now() - primaryStarted;
-          return;
-        } catch (err) {
-          fallback.rewrite = toReasonCode(err, 'anthropic');
+      if (tier === 'quality') {
+        const region = resolveQwenRewriteRegion(env, continent, body.regionPreference);
+        if (region.apiKey) {
+          try {
+            finalText = await qwenRewrite(region, systemPrompt, userMessage);
+            rewriteEngine = 'qwen-plus';
+            primaryMs = Date.now() - primaryStarted;
+            return;
+          } catch (err) {
+            fallback.rewrite = toReasonCode(err, 'qwen_rewrite');
+          }
+        }
+        if (env.ANTHROPIC_API_KEY) {
+          try {
+            finalText = await haikuRewrite(env, systemPrompt, userMessage);
+            rewriteEngine = HAIKU_MODEL;
+            primaryMs = Date.now() - primaryStarted;
+            return;
+          } catch (err) {
+            fallback.rewrite = fallback.rewrite ?? toReasonCode(err, 'anthropic');
+          }
         }
       }
       try {
@@ -246,21 +286,20 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
       primaryMs = Date.now() - primaryStarted;
     })();
 
-    const shadowQwenRewrite =
-      tier === 'quality' && body.compareRewrite
+    const shadowAltRewrite =
+      tier === 'quality' && body.compareRewrite && env.ANTHROPIC_API_KEY
         ? (async () => {
-            const region = resolveQwenRewriteRegion(env, continent);
-            const qwenStarted = Date.now();
+            const altStarted = Date.now();
             try {
-              const text = await qwenRewrite(region, systemPrompt, userMessage);
-              rewriteComparison = { qwenText: text, qwenMs: Date.now() - qwenStarted };
+              const text = await haikuRewrite(env, systemPrompt, userMessage);
+              rewriteComparison = { altEngine: HAIKU_MODEL, altText: text, altMs: Date.now() - altStarted };
             } catch (err) {
-              rewriteComparison = { qwenError: toReasonCode(err, 'qwen_rewrite'), qwenMs: Date.now() - qwenStarted };
+              rewriteComparison = { altEngine: HAIKU_MODEL, altError: toReasonCode(err, 'anthropic'), altMs: Date.now() - altStarted };
             }
           })()
         : Promise.resolve();
 
-    await Promise.all([primaryRewrite, shadowQwenRewrite]);
+    await Promise.all([primaryRewrite, shadowAltRewrite]);
   }
   const rewriteMs = primaryMs;
   const totalMs = Date.now() - started;

@@ -1,5 +1,5 @@
 import { EngineError } from '../errors';
-import type { Env } from '../types';
+import type { Env, RegionPreference } from '../types';
 import { resolveDashscopeRegion } from './dashscopeRegion';
 
 const QWEN_REWRITE_TIMEOUT_MS = 8_000;
@@ -15,8 +15,8 @@ export interface QwenRewriteRegion {
  * Same region routing as ASR (shared resolver), but qwen-plus needs no "-us" region suffix
  * (unlike qwen3-asr-flash) — it's the same model id in both regions.
  */
-export function resolveQwenRewriteRegion(env: Env, continent: string | undefined): QwenRewriteRegion {
-  const { baseUrl, apiKey } = resolveDashscopeRegion(env, continent);
+export function resolveQwenRewriteRegion(env: Env, continent: string | undefined, preference?: RegionPreference): QwenRewriteRegion {
+  const { baseUrl, apiKey } = resolveDashscopeRegion(env, continent, preference);
   return { baseUrl, apiKey, model: env.QWEN_REWRITE_MODEL ?? DEFAULT_MODEL };
 }
 
@@ -25,8 +25,10 @@ interface QwenTextGenResponseShape {
 }
 
 /**
- * Rewrite via Qwen-Plus (DashScope native text-generation) — evaluation/shadow engine run
- * alongside Haiku 4.5 during the Haiku-vs-Qwen comparison period; never the inserted text.
+ * Rewrite via Qwen-Plus (DashScope native text-generation) — the PRIMARY quality-tier rewrite
+ * engine (user decision after a multi-day Haiku-vs-Qwen comparison: ~3-4x cheaper at
+ * comparable quality, reuses the region-locked DashScope keys already required for ASR).
+ * Haiku 4.5 remains the first fallback and the compare-mode shadow engine.
  */
 export async function qwenRewrite(region: QwenRewriteRegion, systemPrompt: string, userContent: string): Promise<string> {
   if (!region.apiKey) {

@@ -36,7 +36,12 @@ export interface Env {
 export type RewriteMode = 'off' | 'clean' | 'rewrite';
 export type Tier = 'quality' | 'free';
 export type AsrEngine = 'qwen3-asr-flash' | 'cf-whisper-large-v3-turbo';
-export type RewriteEngine = 'claude-haiku-4-5' | 'cf-llama-3.1-8b-instruct' | 'none';
+/** Primary rewrite chain (quality tier): qwen-plus → claude-haiku-4-5 → cf-llama → raw text. */
+export type RewriteEngine = 'qwen-plus' | 'claude-haiku-4-5' | 'cf-llama-3.1-8b-instruct' | 'none';
+/** Output Chinese variant: script + regional idiom, applied by the rewrite stage. */
+export type ChineseVariant = 'simplified-cn' | 'simplified-sg-my' | 'traditional-tw' | 'traditional-hk-mo';
+/** Manual DashScope region override; 'auto' = continent-based routing (request.cf.continent). */
+export type RegionPreference = 'auto' | 'apac' | 'us';
 
 /**
  * POST /api/transcribe request body.
@@ -62,10 +67,15 @@ export interface TranscribeRequestBody {
   /** v1 compatibility (maps to rewriteMode 'clean' when true). */
   llmCorrect?: boolean;
   /**
-   * Evaluation-only: shadow-run Qwen-Plus rewrite alongside the primary chain for side-by-side
-   * comparison (quality tier only; never affects `finalText`/`text`, only `rewriteComparison`).
+   * Evaluation-only: shadow-run the alternative rewrite engine (Haiku, now that Qwen-Plus is
+   * primary) alongside the primary chain for side-by-side comparison (quality tier only;
+   * never affects `finalText`/`text`, only `rewriteComparison`).
    */
   compareRewrite?: boolean;
+  /** Output Chinese script/idiom variant (applied by the rewrite stage; default simplified-cn). */
+  chineseVariant?: ChineseVariant;
+  /** Manual DashScope region override (default 'auto' = continent-based). */
+  regionPreference?: RegionPreference;
 }
 
 /** Success response — a strict superset of v1 (`text`/`duration_ms` keep their v1 semantics). */
@@ -83,8 +93,8 @@ export interface TranscribeResponseBody {
   timings: { asr_ms: number; rewrite_ms: number; total_ms: number };
   /** Downgrade reason codes when an engine fell back, e.g. "dashscope_timeout", "anthropic_http_529". */
   fallback?: { asr?: string; rewrite?: string };
-  /** Present only when the request set `compareRewrite: true` — a shadow Qwen-Plus rewrite for comparison. */
-  rewriteComparison?: { qwenText?: string; qwenMs?: number; qwenError?: string };
+  /** Present only when the request set `compareRewrite: true` — the shadow (alternative) engine's rewrite for comparison. */
+  rewriteComparison?: { altEngine?: string; altText?: string; altMs?: number; altError?: string };
 }
 
 /** Error response (unified shape for all non-2xx). */
