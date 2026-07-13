@@ -115,6 +115,9 @@ const NOISE_FLOOR_FACTOR = 2.5;
 /** Initial calibration window: the minimum chunk amplitude within this window seeds the noise floor. */
 const CALIBRATION_WINDOW_MS = 500;
 
+/** 16-bit PCM chunk average that maps to a full input meter (typical conversational speech). */
+const LEVEL_CEILING = 2500;
+
 /**
  * macOS's avfoundation device isn't always released the instant the previous ffmpeg process
  * exits — a new capture that starts too soon can silently record a perfectly valid, correctly
@@ -168,10 +171,20 @@ export class AudioRecorderService {
    * capture failure → whole recording near-zero) from "real audio the ASR couldn't read".
    */
   private sessionPeakAmplitude = 0;
+  /**
+   * Live normalized input level (0..1), updated per PCM chunk, jumps up fast and decays slowly
+   * so a status-bar meter reads like a VU meter. 0 when VAD is off (no PCM stream to measure).
+   */
+  private currentLevel = 0;
 
   /** Loudest chunk amplitude captured this session (0 when VAD is off — no PCM to measure). */
   get peakAmplitude(): number {
     return this.sessionPeakAmplitude;
+  }
+
+  /** Live input level 0..1 for a reactive mic meter (0 when VAD is off — no PCM to measure). */
+  get inputLevel(): number {
+    return this.currentLevel;
   }
 
   get isRecording(): boolean {
@@ -239,6 +252,7 @@ export class AudioRecorderService {
     this.noiseFloor = null;
     this.observedMs = 0;
     this.sessionPeakAmplitude = 0;
+    this.currentLevel = 0;
     this.onSegmentError = options.onSegmentError;
 
     const isVad = Boolean(options.vadEnabled && options.onSegment);
@@ -470,6 +484,9 @@ export class AudioRecorderService {
       const average = sum / numSamples;
       const durationMs = chunk.byteLength / 32;
       this.sessionPeakAmplitude = Math.max(this.sessionPeakAmplitude, average);
+      // Normalize to 0..1 against a typical-speech ceiling; fast attack, slow release (VU feel).
+      const normalized = Math.min(1, average / LEVEL_CEILING);
+      this.currentLevel = Math.max(normalized, this.currentLevel * 0.65);
 
       const silenceThreshold = this.updateAdaptiveThreshold(average, durationMs);
       if (average < silenceThreshold) {
