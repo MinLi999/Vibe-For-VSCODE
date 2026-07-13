@@ -124,6 +124,28 @@ const CALIBRATION_WINDOW_MS = 500;
  */
 const AVFOUNDATION_SETTLE_MS = 400;
 
+/**
+ * Kills capture processes orphaned by a PREVIOUS extension host. We spawn ffmpeg with
+ * `detached: true` (an earlier deliberate fix for IDE audio-session sample-rate locking), which
+ * means a window reload / .vsix update that kills the extension host does NOT kill a running
+ * ffmpeg — the orphan keeps the microphone open until its own `-t` cap expires (up to ~40s),
+ * and every recording attempt in the new session fails with avfoundation
+ * "Error opening input: Input/output error" until then. The pkill pattern matches our exact,
+ * highly distinctive arg combination (capture input + 16kHz + pipe output) so a user's own
+ * unrelated ffmpeg jobs are not touched. pkill exiting 1 just means "no match" — not an error.
+ */
+function reapOrphanCaptures(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const reaper = spawn('pkill', ['-f', 'ffmpeg.*avfoundation.*-ar 16000.*pipe:1'], { stdio: 'ignore' });
+      reaper.once('error', () => resolve());
+      reaper.once('exit', () => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
 export class AudioRecorderService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private detectedOk: string | null = null; // Caches the resolved binary path once successfully probed.
@@ -138,6 +160,8 @@ export class AudioRecorderService {
   private onSegmentError: ((error: Error) => void) | undefined;
   /** Timestamp of the last stop/cancel — used to give macOS's avfoundation device time to release. */
   private lastStoppedAtMs = 0;
+  /** One-shot per session: reap orphaned capture processes left by a previous extension host. */
+  private orphansCleaned = false;
 
   get isRecording(): boolean {
     return this.child !== null;
@@ -181,6 +205,12 @@ export class AudioRecorderService {
   ): Promise<void> {
     if (this.child !== null) {
       throw new RecorderStartError('recorder already running');
+    }
+    if (os.platform() === 'darwin' && !this.orphansCleaned) {
+      // First recording of this session: a previous extension host (window reload / .vsix
+      // update) may have left a detached ffmpeg holding the microphone — reap it first.
+      this.orphansCleaned = true;
+      await reapOrphanCaptures();
     }
     if (os.platform() === 'darwin' && this.lastStoppedAtMs > 0) {
       const sinceStop = Date.now() - this.lastStoppedAtMs;
@@ -258,13 +288,12 @@ export class AudioRecorderService {
   }
 
   /**
-   * Spawns ffmpeg and waits for either the first real stdout chunk (device opened, capture is
-   * genuinely flowing) or an exit/error event, whichever comes first — up to a generous window
-   * that covers slow avfoundation device negotiation. `this.child` is set synchronously so
-   * cancel()/stop() can act on the in-flight process during this race. Resolves on confirmed
-   * success (permanent onChunk/onError listeners stay wired for the rest of the session);
-   * rejects on failure so the caller can retry; rejects with RecorderCancelledError if
-   * cancel()/stop() won the race instead.
+   * Spawns ffmpeg and races the first stdout chunk (device opened — capture data flows
+   * continuously once open, even for silence) against an exit/error event and a 4s hung-open
+   * deadline. `this.child` is set synchronously so cancel()/stop() can act on the in-flight
+   * process during this race. Resolves on confirmed success (permanent onChunk/onError
+   * listeners stay wired for the rest of the session); rejects on failure/hang so the caller
+   * can retry; rejects with RecorderCancelledError if cancel()/stop() won the race instead.
    */
   private trySpawn(
     binary: string,
@@ -281,11 +310,19 @@ export class AudioRecorderService {
       let confirmed = false;
 
       const confirmTimer = setTimeout(() => {
-        // No data and no exit within the window: treat as started (e.g. genuinely silent
-        // input is legitimate) rather than blocking indefinitely.
-        confirmed = true;
-        resolve();
-      }, 1500);
+        // Once capture actually starts, ffmpeg emits stream bytes continuously EVEN FOR PURE
+        // SILENCE (PCM/MP3 of zeros is still data) — so "no data by now" is not a quiet room,
+        // it's a hung device open. Fail this attempt so the caller's retry gets a fresh shot;
+        // an earlier version resolved here as "probably fine" and let slow (>1.5s) device-open
+        // failures slip past the retry entirely.
+        this.child = null;
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        reject(new RecorderStartError('ffmpeg produced no audio data within 4s (device open appears hung)'));
+      }, 4000);
 
       child.stderr.on('data', (data: Buffer) => {
         stderrTail = (stderrTail + data.toString()).slice(-500);
