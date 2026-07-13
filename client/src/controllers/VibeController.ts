@@ -108,8 +108,20 @@ function isNonSpeechTranscript(text: string): boolean {
   return false;
 }
 
-/** Ignore key-repeat while the hotkey is held down (OS auto-repeat fires every ~50ms). */
-const TOGGLE_DEBOUNCE_MS = 400;
+/**
+ * Hotkey semantics — supports BOTH interaction styles with one binding:
+ * - tap to start, tap again to stop (classic toggle);
+ * - hold to record, release to stop (push-to-talk).
+ * VS Code keybindings only deliver keydown (with OS auto-repeat, typically every 30-90ms after
+ * a 250-500ms initial delay); there is no keyup event. So while recording, the first incoming
+ * event arms a short pending-stop window: if MORE events arrive inside it, that's an auto-repeat
+ * burst (the key is held) → enter hold mode and stop only when the burst ceases (key released).
+ */
+const PENDING_STOP_WINDOW_MS = 350;
+/** Repeats ceasing for this long = the held key was released. Covers slow key-repeat settings. */
+const HOLD_RELEASE_MS = 650;
+/** ffmpeg needs ~300ms to spin up; stopping earlier yields "没有录到音频". */
+const MIN_RECORDING_MS = 700;
 
 export class VibeController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
@@ -210,28 +222,66 @@ export class VibeController implements vscode.Disposable {
 
   // ── Command entry points ──────────────────────────────────
 
-  private lastToggleAt = 0;
+  private pendingStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private holdReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private holdMode = false;
+  private isStopping = false;
 
   private async toggle(): Promise<void> {
-    // Holding the hotkey triggers OS key-repeat (~every 50ms), which used to slam
-    // start/stop against each other and error out with "没有录到音频".
-    const now = Date.now();
-    if (now - this.lastToggleAt < TOGGLE_DEBOUNCE_MS) {
-      return;
-    }
-    this.lastToggleAt = now;
-
     switch (this.audioState.currentPhase) {
       case 'idle':
+        this.clearHoldTimers();
         await this.startRecording();
         return;
-      case 'recording':
-        await this.stopAndTranscribe();
+      case 'recording': {
+        // See PENDING_STOP_WINDOW_MS: distinguish a deliberate second press (toggle-stop)
+        // from the OS auto-repeat burst of a held key (push-to-talk).
+        if (this.holdMode) {
+          this.extendHoldRelease();
+          return;
+        }
+        if (this.pendingStopTimer !== null) {
+          // A second event inside the pending window = auto-repeat burst = the key is held.
+          clearTimeout(this.pendingStopTimer);
+          this.pendingStopTimer = null;
+          this.holdMode = true;
+          this.extendHoldRelease();
+          return;
+        }
+        this.pendingStopTimer = setTimeout(() => {
+          this.pendingStopTimer = null;
+          void this.stopAndTranscribe();
+        }, PENDING_STOP_WINDOW_MS);
         return;
+      }
       case 'processing':
         void vscode.window.setStatusBarMessage('VibeFox:正在转写上一段,请稍候', 2000);
         return;
     }
+  }
+
+  /** Each auto-repeat event pushes the release deadline out; silence on the key = released → stop. */
+  private extendHoldRelease(): void {
+    if (this.holdReleaseTimer !== null) {
+      clearTimeout(this.holdReleaseTimer);
+    }
+    this.holdReleaseTimer = setTimeout(() => {
+      this.holdReleaseTimer = null;
+      this.holdMode = false;
+      void this.stopAndTranscribe();
+    }, HOLD_RELEASE_MS);
+  }
+
+  private clearHoldTimers(): void {
+    if (this.pendingStopTimer !== null) {
+      clearTimeout(this.pendingStopTimer);
+      this.pendingStopTimer = null;
+    }
+    if (this.holdReleaseTimer !== null) {
+      clearTimeout(this.holdReleaseTimer);
+      this.holdReleaseTimer = null;
+    }
+    this.holdMode = false;
   }
 
   private async cancel(): Promise<void> {
@@ -239,6 +289,7 @@ export class VibeController implements vscode.Disposable {
       return;
     }
     this.clearAutoStop();
+    this.clearHoldTimers();
     await this.recorder.cancel();
     this.audioState.reset();
     this.statusBar.showIdle();
@@ -359,15 +410,44 @@ export class VibeController implements vscode.Disposable {
   }
 
   private async stopAndTranscribe(): Promise<void> {
-    if (!this.audioState.isRecording) {
+    // Reentrancy guard: hold-release timers, auto-stop, and manual presses can race; a second
+    // entry during the awaits below used to hit beginProcessing() from a stale phase
+    // ("invalid recording state transition: idle → processing").
+    if (!this.audioState.isRecording || this.isStopping) {
       return;
     }
+    this.isStopping = true;
+    try {
+      await this.stopAndTranscribeInner();
+    } finally {
+      this.isStopping = false;
+    }
+  }
+
+  private async stopAndTranscribeInner(): Promise<void> {
     this.clearAutoStop();
+    this.clearHoldTimers();
+
+    // A stop within ffmpeg's ~300ms spin-up window captures zero audio ("没有录到音频");
+    // for very quick taps, wait out the minimum before stopping.
+    const elapsed = this.audioState.elapsedMs;
+    if (elapsed < MIN_RECORDING_MS) {
+      await new Promise((resolve) => setTimeout(resolve, MIN_RECORDING_MS - elapsed));
+    }
+    if (!this.audioState.isRecording) {
+      return; // Cancelled (Esc) during the wait.
+    }
 
     // Wait for ffmpeg to exit and flush trailing chunks (or return the final VAD MP3 segment)
     const finalMp3 = await this.recorder.stop();
+    if (!this.audioState.isRecording) {
+      return; // Cancelled/reset by another path while ffmpeg was shutting down.
+    }
     this.audioState.beginProcessing();
     this.statusBar.showProcessing();
+    // Engine fallback chains (Qwen timeout → Whisper) can stretch to ~10s; tell the user
+    // the app is working, not frozen.
+    const slowHint = setTimeout(() => this.statusBar.showProcessingSlow(), 6000);
 
     try {
       const config = this.sessionConfig ?? this.readConfig();
@@ -389,13 +469,14 @@ export class VibeController implements vscode.Disposable {
       }
 
       const context = await this.currentSessionContext(config);
-      const { finalText, engineLabel, totalMs } = await this.processUtterance(config, audioBase64, context);
+      const result = await this.processUtterance(config, audioBase64, context);
+      const finalText = this.dedupeAgainstSession(result.finalText);
 
       if (finalText.trim().length > 0) {
         this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
         this.sessionChars += finalText.length;
-        this.sessionProcessingMs += totalMs;
-        this.sessionEngineLabel = engineLabel;
+        this.sessionProcessingMs += result.totalMs;
+        this.sessionEngineLabel = result.engineLabel;
         const outcome = await this.insertWithPaste(finalText, config.insertTarget);
         this.audioState.completeWithText(finalText);
         this.finishSession(config);
@@ -435,7 +516,38 @@ export class VibeController implements vscode.Disposable {
       this.statusBar.flashResult('error', '转写失败');
       await this.reportTranscribeError(err);
       this.flushSessionErrors();
+    } finally {
+      clearTimeout(slowHint);
     }
+  }
+
+  /**
+   * Trims text that echoes what this session already inserted. Echoes come from two vectors:
+   * ASR repeating conditioning text on near-silent audio, and rewrite LLMs ignoring the
+   * "禁止重复输出" instruction. Deterministic last line of defense regardless of the source.
+   */
+  private dedupeAgainstSession(text: string): string {
+    const prev = this.sessionTranscript;
+    const t = text.trim();
+    if (prev.length === 0 || t.length === 0) {
+      return t;
+    }
+    const normalize = (s: string): string => s.replace(/[\s。.,，、;；:：!！?？…~〜'"'"()（）\-]/g, '');
+    const nPrev = normalize(prev);
+    const nText = normalize(t);
+    // The whole utterance is a re-emission of what was already inserted.
+    if (nText.length > 0 && nPrev.endsWith(nText)) {
+      return '';
+    }
+    // Overlap trim: longest suffix of the inserted transcript that prefixes the new text
+    // (≥8 chars so ordinary short word repeats aren't mistaken for echoes).
+    const max = Math.min(prev.length, t.length);
+    for (let k = max; k >= 8; k--) {
+      if (prev.endsWith(t.slice(0, k))) {
+        return t.slice(k).replace(/^[\s。.,，、;；:：!！?？…]+/, '');
+      }
+    }
+    return t;
   }
 
   /** Session-end feedback: one consolidated stats flash + at most one error summary toast. */
@@ -513,14 +625,15 @@ export class VibeController implements vscode.Disposable {
     const config = this.sessionConfig ?? this.readConfig();
     try {
       const context = await this.currentSessionContext(config);
-      const { finalText, engineLabel, totalMs } = await this.processUtterance(config, segmentMp3.toString('base64'), context);
+      const result = await this.processUtterance(config, segmentMp3.toString('base64'), context);
+      const finalText = this.dedupeAgainstSession(result.finalText);
 
       if (finalText.trim().length > 0) {
         this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
         this.vadSegmentsTranscribedCount++;
         this.sessionChars += finalText.length;
-        this.sessionProcessingMs += totalMs;
-        this.sessionEngineLabel = engineLabel;
+        this.sessionProcessingMs += result.totalMs;
+        this.sessionEngineLabel = result.engineLabel;
         // No per-segment toast — progress lives in the status bar; one consolidated summary at session end.
         await this.insertWithPaste(finalText, config.insertTarget);
       }
@@ -536,7 +649,10 @@ export class VibeController implements vscode.Disposable {
     context: ContextPayload,
   ): Promise<TranscriptionOutcome> {
     const provider = config.apiProvider;
-    const previousTranscript = this.sessionTranscript.slice(-300) || undefined;
+    // previousTranscript conditioning was REMOVED from every prompt vector: Whisper echoes its
+    // initial_prompt back on near-silent audio, and rewrite LLMs occasionally re-emit the
+    // "上一段" reference — both produced verbatim duplicated sentences in the inserted text.
+    // The session transcript now lives client-side only, for dedupeAgainstSession.
     const keywords = context.keywords;
     const started = Date.now();
 
@@ -550,7 +666,6 @@ export class VibeController implements vscode.Disposable {
         language: config.language,
         keywords,
         projectContext: context.projectContext || undefined,
-        previousTranscript,
         rewriteMode: config.rewriteMode,
         compareRewrite: config.rewriteCompareEnabled,
       });
@@ -580,24 +695,24 @@ export class VibeController implements vscode.Disposable {
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', 'Groq API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      text = await this.api.transcribeGroq(apiKey, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeGroq(apiKey, audioBase64, config.language, keywords);
     } else if (provider === 'openai') {
       const apiKey = await this.secrets.get('vibefox.openaiKey');
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', 'OpenAI API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      text = await this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeOpenAI(apiKey, audioBase64, config.language, keywords);
     } else if (provider === 'aliyun') {
       const apiKey = await this.secrets.get('vibefox.aliyunKey');
       if (apiKey === undefined) {
         throw new ApiError('unauthorized', '阿里云 API Key 未设置，请运行「VibeFox: Set API Key」进行设置');
       }
-      text = await this.api.transcribeAliyun(config.endpoint, apiKey, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeAliyun(config.endpoint, apiKey, audioBase64, config.language, keywords);
     } else if (provider === 'custom') {
       if (!config.customEndpoint) {
         throw new Error('自定义服务地址 (vibefox.customEndpoint) 未配置');
       }
-      text = await this.api.transcribeCustom(config.customEndpoint, audioBase64, config.language, keywords, previousTranscript);
+      text = await this.api.transcribeCustom(config.customEndpoint, audioBase64, config.language, keywords);
     } else {
       throw new Error(`不支持的 API Provider: ${provider}`);
     }

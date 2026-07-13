@@ -83,6 +83,12 @@ export class StatusBarViewer implements vscode.Disposable {
     this.item.tooltip = '正在转写语音';
   }
 
+  /** Transcription is taking unusually long (engine fallback / slow network) — reassure, don't look frozen. */
+  showProcessingSlow(): void {
+    this.item.text = '$(loading~spin) 转写中…(网络较慢或引擎切换中)';
+    this.item.tooltip = '主引擎响应慢,正在自动切换备用引擎';
+  }
+
   /** Brief success/error feedback, then returns to idle. */
   flashResult(kind: 'ok' | 'error', detail: string): void {
     this.stopTimers();

@@ -30,22 +30,16 @@ export const REWRITE_SYSTEM_PROMPT = `你是一个语音输入改写器，把程
  * `projectContext` (active file/symbols/workspace vocabulary) is NOT sent to the ASR stage
  * (see qwenAsr.ts note) — it's fed here instead, where a text-only chat completion with a
  * strict system prompt reliably treats it as silent background rather than echoing it.
+ * previousTranscript was removed entirely: despite the "禁止重复输出" instruction, models
+ * occasionally re-emitted it, duplicating already-inserted sentences in the user's chat.
  */
-export function buildRewriteUserMessage(
-  rawText: string,
-  keywords: string[],
-  previousTranscript?: string,
-  projectContext?: string,
-): string {
+export function buildRewriteUserMessage(rawText: string, keywords: string[], projectContext?: string): string {
   const parts: string[] = [];
   if (keywords.length > 0) {
     parts.push(`参考词表（按此拼写还原代码标识符）：${keywords.join('、')}`);
   }
   if (projectContext && projectContext.trim().length > 0) {
     parts.push(`项目背景（仅供理解术语，不要输出或引用这段内容本身）：\n${projectContext.trim()}`);
-  }
-  if (previousTranscript && previousTranscript.trim().length > 0) {
-    parts.push(`上一段已转写内容（仅供理解衔接，禁止重复输出）：\n${previousTranscript.trim().slice(-300)}`);
   }
   parts.push(`待处理转写：\n${rawText}`);
   return parts.join('\n\n');
