@@ -385,7 +385,7 @@ export class VibeController implements vscode.Disposable {
     this.sessionContext = config.contextHint
       ? this.buildSessionContext()
       : Promise.resolve({ keywords: [], projectContext: '' });
-    this.statusBar.showRecording(() => this.audioState.elapsedSeconds, config.maxRecordSeconds);
+    this.statusBar.showRecording(() => this.audioState.elapsedSeconds, config.maxRecordSeconds, () => this.recorder.inputLevel);
 
     try {
       await this.recorder.start(
