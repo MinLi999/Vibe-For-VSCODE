@@ -132,6 +132,14 @@ const HOLD_RELEASE_MS = 650;
 /** ffmpeg needs ~300ms to spin up; stopping earlier yields "没有录到音频". */
 const MIN_RECORDING_MS = 700;
 
+/**
+ * Whole-session peak 16-bit PCM amplitude below this = the mic delivered silence (dead capture),
+ * not quiet speech. Real speech peaks in the thousands; the adaptive silence floor alone is ~350;
+ * a genuinely failed avfoundation capture peaks near the noise floor (<~50). 80 is a safe cutoff
+ * that won't false-trigger on even a soft-spoken real utterance.
+ */
+const SILENT_CAPTURE_PEAK = 80;
+
 export class VibeController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private autoStopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -474,6 +482,21 @@ export class VibeController implements vscode.Disposable {
           );
         }
         audioBase64 = this.audioState.toBase64();
+      }
+
+      // Silent-capture gate: an intermittent macOS avfoundation failure delivers a full-length
+      // but acoustically-empty stream (server logs confirmed 54-84s payloads transcribing to a
+      // single char). If the ENTIRE session's loudest chunk never rose near speech level — and
+      // no earlier VAD segment already succeeded — the mic gave us nothing. Fail fast with an
+      // honest, actionable message instead of sending silence and surfacing the misleading
+      // "未识别到语音". Only meaningful in VAD mode (peakAmplitude is 0 when there's no PCM to measure).
+      if (config.vadEnabled && this.vadSegmentsTranscribedCount === 0 && this.recorder.peakAmplitude < SILENT_CAPTURE_PEAK) {
+        this.audioState.reset();
+        this.statusBar.flashResult('error', '麦克风没录到声音,请重试');
+        void vscode.window.showWarningMessage(
+          'VibeFox:这次没有从麦克风采集到有效声音(可能是系统麦克风尚未就绪或被其他程序占用)。请稍等一秒再按一次热键重试;若反复出现,运行「VibeFox: Diagnose Audio Input」检查输入设备。',
+        );
+        return;
       }
 
       const context = await this.currentSessionContext(config);
