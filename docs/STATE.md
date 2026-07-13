@@ -2,8 +2,12 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 2.5「超越竞品」双引擎重构完成,待部署 (2026-07-12)。
-**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿。⚠️ 待办:①用户提供 DASHSCOPE_API_KEY_APAC + DASHSCOPE_API_KEY_US(阿里云按区域隔离,两把独立 key,美国区无免费额度需单独开通计费)与 ANTHROPIC_API_KEY 后 `wrangler secret put` + `/deploy`;②质量档真实语音验证(新加坡区 + 美国区各测一次);③本机 Node 20 无法跑 wrangler 4 dev(需 Node ≥22),线上冒烟移至部署时。
+**阶段**:Phase 2.5「超越竞品」双引擎重构完成,已部署上线 (2026-07-12)。
+**健康度**:🟢 双端编译/typecheck 全绿,DoD 分层 grep 全绿,线上冒烟(401/403/404)通过。⚠️ 待办:质量档真实语音端到端验证(用户反馈的两个 bug 已修复,待用户重新用真实语音复测)。
+- 2026-07-12(**用户报告的严重 bug,已修复**):用户反馈聊天框里出现"【项目词表(代码标识符,注意大小写)】"字样后跟一长串明显是 package-lock.json 依赖字段的词(https/license/integrity/sha512/libvips/workerd 等),且识别精度不高。排查出两个根因,均已修复:
+  ① **`client/src/services/WorkspaceContextService.ts` 的 `FIND_EXCLUDE` glob 写错**:把 `package-lock.json`/`yarn.lock`/`pnpm-lock.yaml` 塞进 `**/{...}/**` 目录排除模式里,这种写法只能排除同名**文件夹**,排除不了**文件本身**——用 `minimatch` 实测验证旧模式确实排除不掉这三个锁文件。导致 149KB 的 `package-lock.json` 被整个当"代码"扫描,依赖包字段被当成"高频项目标识符"喂进请求,挤占了真实项目词表的名额(直接拖累精度)。已改写为 `{**/dir/**,...,**/package-lock.json,**/npm-shrinkwrap.json,**/yarn.lock,**/pnpm-lock.yaml}` 形式的正确排除(`EditorContextViewer.ts` 同步修复),`minimatch` 实测验证新模式排除正确且不误伤真实源码。
+  ② **Qwen3-ASR 请求方式本身有问题(真正导致文本泄漏进聊天框的原因)**:早期实现把项目词表/背景塞进 DashScope `multimodal-generation` 接口的 `system` 角色聊天消息里,当作"上下文增强"传给 ASR。重新核查阿里云官方 API 参考后发现**这个用法从未被文档证实支持**——官方文档里唯一沾边的线索是另一个**异步文件转写接口**(不同的 endpoint/model)示例代码里一行**被注释掉**的 `parameters.corpus.text`。模型显然把我们塞的这段"偏置说明文字"当成了要处理的对话内容,直接原样"读"出来当转写结果返回,造成聊天框里出现内部提示词原文的严重体验事故。修复:**彻底移除**这个未经证实且已实锤造成污染的机制,Qwen3-ASR 请求改为纯音频(不注入任何文本);词表/项目背景的校正职责转移到已验证安全的改写阶段(`server/src/prompts.ts` `buildRewriteUserMessage` 携带 keywords + projectContext,交给 Haiku/Qwen-Plus 这类文本 LLM 处理,这条路径不会有"把提示词读出来"的风险)。
+  顺带清理:`server/src/engines/cfLlama.ts` 的 `LLAMA_MODEL` 常量取消不必要的 export(未被外部引用的死导出);`prompts.ts` 的 `buildQwenContext`/`QWEN_CONTEXT_MAX_CHARS` 随机制移除一并删除。全量核对 21 个 `vibefox.*` 设置与代码读取点一一对应,无孤儿设置/孤儿读取。
 - 2026-07-12(修正):查阿里云官方文档发现 DashScope API Key **按区域隔离、不能跨区调用**(新加坡 key 打美国区端点会 403);原设计的单一 `DASHSCOPE_API_KEY` 是缺口,已改为 `DASHSCOPE_API_KEY_APAC` / `DASHSCOPE_API_KEY_US` 两个独立 secret,`resolveQwenRegion` 按解析出的区域一并返回对应 key(`server/src/engines/qwenAsr.ts`)。
 - 2026-07-12(新增,评估用):用户质疑"为何改写引擎用 Claude Haiku 而不用阿里云自己的模型"—— 查证 Qwen-Plus 国际版定价确实比 Haiku 4.5 便宜 2~4 倍,但"更懂中英混杂"这个说法查无可信依据(第三方比较网站的 benchmark 数字不可信)。决定:**Haiku 与 Qwen-Plus 两条改写线路并行跑几天**,由用户实际听感判断。实现:`server/src/engines/qwenRewrite.ts`(DashScope 原生 text-generation 接口,模型 `qwen-plus`,复用 ASR 已有的区域 key,不需要新增 secret);`transcribe.ts` 里 Haiku(主链路,决定实际插入文本)与 Qwen-Plus(影子调用,仅供比较)用 `Promise.all` 并发跑,不增加串行延迟;响应新增 `rewriteComparison` 字段。客户端新增 `vibefox.rewriteCompareEnabled` 设置(默认关)+ `RewriteComparisonViewer`(新 Output Channel「VibeFox: Rewrite Comparison (Haiku vs Qwen)」),开启后每次转写都会把原文/两个引擎结果并排写入面板。评估期结束后建议关闭该设置(省调用成本)。
 

@@ -1,7 +1,7 @@
 import { EngineError } from '../errors';
 import type { Env } from '../types';
 
-export const LLAMA_MODEL = '@cf/meta/llama-3.1-8b-instruct';
+const LLAMA_MODEL = '@cf/meta/llama-3.1-8b-instruct';
 const LLAMA_TIMEOUT_MS = 10_000;
 
 interface LlamaOutputShape {

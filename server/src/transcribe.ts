@@ -5,7 +5,7 @@ import { whisperTranscribe } from './engines/cfWhisper';
 import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
 import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
 import { HttpError, toReasonCode } from './errors';
-import { buildQwenContext, buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT } from './prompts';
+import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT } from './prompts';
 import type {
   Env,
   RewriteMode,
@@ -171,7 +171,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     const region = resolveQwenRegion(env, continent);
     if (region.apiKey) {
       try {
-        rawText = await qwenTranscribe(region, body.audio, body.language, buildQwenContext(body.keywords, body.projectContext, body.previousTranscript));
+        rawText = await qwenTranscribe(region, body.audio, body.language);
         asrEngine = 'qwen3-asr-flash';
       } catch (err) {
         fallback.asr = toReasonCode(err, 'dashscope');
@@ -202,7 +202,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
 
   if (body.rewriteMode !== 'off' && rawText.trim().length >= MIN_REWRITE_CHARS) {
     const systemPrompt = body.rewriteMode === 'rewrite' ? REWRITE_SYSTEM_PROMPT : CLEAN_SYSTEM_PROMPT;
-    const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.previousTranscript);
+    const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.previousTranscript, body.projectContext);
 
     const primaryRewrite = (async () => {
       if (tier === 'quality' && env.ANTHROPIC_API_KEY) {
