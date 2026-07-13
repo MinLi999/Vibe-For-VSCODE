@@ -2,8 +2,11 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 3.2 avfoundation 设备打开失败自动重试,已打包待复测 (2026-07-13)。
-**健康度**:🟢 双端编译/typecheck 全绿。⚠️ 待办:用户复测验证"ffmpeg exited abnormally code 251"是否消失;继续验证 Haiku 拒绝行为修复与 avfoundation 静音修复效果。
+**阶段**:Phase 3.3 孤儿 ffmpeg 进程回收 + 悬挂设备打开判定修正,已打包待复测 (2026-07-13)。
+**健康度**:🟢 client typecheck/compile/分层 grep 全绿。⚠️ 待办:用户装新 vsix 复测"刚打开扩展第一次录音就 code 251"是否消失。
+- 2026-07-13(Phase 3.2 修复后用户仍复现 code 251,且明确发生在"刚点开时"——第一次录音,进一步确诊出两个漏洞,均已修复):
+  ① **孤儿 ffmpeg 霸占麦克风(真凶)**:我们 spawn ffmpeg 用了 `detached: true`(更早为修"IDE 音频采样率锁定"特意加的),副作用是**窗口重载/更新 .vsix 杀掉扩展宿主时,正在跑的 ffmpeg 不会跟着死**,孤儿进程继续持有麦克风直到自己的 `-t` 时限(现在长达 ~40s)到期——新会话第一次录音必然打不开设备(avfoundation `Error opening input: Input/output error`),"等一会再试就好"= 等孤儿自己超时退出。修复:`reapOrphanCaptures()`——每会话第一次录音前用 `pkill -f 'ffmpeg.*avfoundation.*-ar 16000.*pipe:1'` 回收孤儿(模式匹配我们独有的参数组合,不会误杀用户自己的 ffmpeg 任务;pkill 退出码 1=无匹配,非错误)。
+  ② **Phase 3.2 重试逻辑里的一个事实错误**:当时的 confirm 窗口在 1.5s 无数据时"当作启动成功放行"(以为环境安静就没有数据)——错了,**ffmpeg 一旦真正打开设备,即使纯静音也会持续输出 PCM/MP3 字节流**,"没有数据"本身就是启动失败的铁证。慢于 1.5s 的设备打开失败会漏过重试直接把 onError 甩给用户(这正好解释了用户看到的报错格式没有"录音启动失败"前缀)。修复:confirm 窗口改为 4s,超时无数据判定为"设备打开悬挂"→ 杀进程 → reject → 走重试,不再当成功放行。
 - 2026-07-13(用户报告"多次 ffmpeg exited abnormally code 251",拿到完整 stderr 后确诊并修复):完整错误文本是 `audio format is not supported` / `Error opening input: Input/output error` / `Error opening input file :default.`——**决定性证据**:这是启动阶段打不开 avfoundation 麦克风设备,不是录音中途设备断开,跟此前"设备释放延迟"是同一根因,只是这次触发成硬报错而不是静默空录音;说明之前那个 400ms 固定等待不够保险。
   修复:`AudioRecorderService.start()` 重构为**确认式重试**——不再用固定 300ms/2s 超时猜测启动是否成功,改为竞速"第一个真实 stdout 数据块"(=设备真的打开了)against"进程退出"(=打开失败),最长等 1.5s;打开失败时自动等 700ms 重试一次,对用户完全透明(不用他们手动等一下再按)。`this.child` 改为在 `trySpawn` 里 spawn 后立即同步赋值,让 `cancel()`/`stop()` 在重试等待窗口内也能正确作用于正在起飞的进程;新增内部 `RecorderCancelledError` 区分"取消导致的失败"(不重试、不报错)和"真失败"(重试或最终报错)。
   之前"拉大 `-t` 安全边际(+2s→+15s)"的尝试是误判方向(以为是录音中途的定时器竞态),已在同一版本里保留(仍是良性加固,不影响本次修复)但不是本次问题的真正原因。
