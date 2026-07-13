@@ -59,6 +59,10 @@ export default {
       return json(result, 200);
     } catch (err) {
       if (err instanceof HttpError) {
+        // HttpError responses complete without throwing past this point, so wrangler tail's
+        // Ok/Error badge (which tracks uncaught exceptions, not HTTP status) shows "Ok" for
+        // these — log explicitly or every 4xx/5xx is invisible in the tail stream.
+        console.log(`transcribe http_error status=${err.status} message=${err.message}`);
         return errorResponse(err.status, err.message);
       }
       console.error('unhandled error', err);
