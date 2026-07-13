@@ -16,7 +16,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, code: string): Promise<
   ]);
 }
 
-/** Cloudflare-edge llama rewrite (free tier + fallback when Anthropic is unavailable). */
+/** Cloudflare-edge llama rewrite (free tier + edge fallback when Qwen-Plus is unavailable). */
 export async function llamaRewrite(env: Env, systemPrompt: string, userContent: string): Promise<string> {
   const result = (await withTimeout(
     env.AI.run(

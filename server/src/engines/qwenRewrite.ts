@@ -25,10 +25,10 @@ interface QwenTextGenResponseShape {
 }
 
 /**
- * Rewrite via Qwen-Plus (DashScope native text-generation) — the PRIMARY quality-tier rewrite
- * engine (user decision after a multi-day Haiku-vs-Qwen comparison: ~3-4x cheaper at
- * comparable quality, reuses the region-locked DashScope keys already required for ASR).
- * Haiku 4.5 remains the first fallback and the compare-mode shadow engine.
+ * Rewrite via Qwen-Plus (DashScope native text-generation) — the sole quality-tier rewrite
+ * engine (~3-4x cheaper than the LLM it replaced at comparable quality on Chinese/EN-mixed
+ * dictation, and reuses the region-locked DashScope keys already required for ASR).
+ * cf-llama is the free-tier engine and the edge fallback when Qwen-Plus is unavailable.
  */
 export async function qwenRewrite(region: QwenRewriteRegion, systemPrompt: string, userContent: string): Promise<string> {
   if (!region.apiKey) {

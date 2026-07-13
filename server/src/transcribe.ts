@@ -1,5 +1,4 @@
 import type { AuthResult } from './auth';
-import { haikuRewrite, HAIKU_MODEL } from './engines/anthropicRewrite';
 import { llamaRewrite } from './engines/cfLlama';
 import { whisperTranscribe } from './engines/cfWhisper';
 import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
@@ -75,7 +74,6 @@ interface ParsedRequest {
   previousTranscript?: string;
   rewriteMode: RewriteMode;
   enginePreference: 'auto' | 'cloudflare';
-  compareRewrite: boolean;
   chineseVariant: ChineseVariant;
   regionPreference: RegionPreference;
 }
@@ -144,7 +142,6 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
   }
 
   const enginePreference = body['enginePreference'] === 'cloudflare' ? 'cloudflare' : 'auto';
-  const compareRewrite = body['compareRewrite'] === true;
   // Unknown values silently fall back to the defaults (forward compat with newer clients).
   const chineseVariant = CHINESE_VARIANTS.includes(body['chineseVariant'] as ChineseVariant)
     ? (body['chineseVariant'] as ChineseVariant)
@@ -161,7 +158,6 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
     previousTranscript,
     rewriteMode,
     enginePreference,
-    compareRewrite,
     chineseVariant,
     regionPreference,
   };
@@ -227,21 +223,13 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     throw new HttpError(502, 'Transcription produced no text (silent or non-speech audio)');
   }
 
-  // --- Rewrite stage (quality tier): Qwen-Plus → Haiku 4.5 → cf llama → raw text ---
-  // Qwen-Plus is primary by user decision after a multi-day side-by-side comparison:
-  // ~3-4x cheaper at comparable quality, and it reuses the region-locked DashScope keys the
-  // ASR stage already requires. Haiku stays as first fallback and as the compare-mode shadow.
+  // --- Rewrite stage (quality tier): Qwen-Plus → Cloudflare llama → raw text ---
+  // Qwen-Plus is the sole quality-tier rewrite engine (~3-4x cheaper than the LLM it replaced,
+  // comparable quality on Chinese/EN-mixed dictation, and it reuses the region-locked DashScope
+  // key the ASR stage already requires). cf-llama is the free-tier engine and the edge fallback.
   let finalText = rawText;
   let rewriteEngine: TranscribeResponseBody['engines']['rewrite'] = 'none';
-  // Own timer per branch (NOT Date.now() - outer-start): the primary and shadow rewrites run
-  // concurrently via Promise.all below, so a single outer timer would report whichever engine
-  // is SLOWER for both — comparison timings need each engine's own isolated latency.
-  let primaryMs = 0;
-
-  // Shadow comparison: run the ALTERNATIVE engine (Haiku) concurrently with the primary chain
-  // so the evaluation adds ~0 sequential latency. Never used as finalText — evaluation-only
-  // signal reported in `rewriteComparison`.
-  let rewriteComparison: TranscribeResponseBody['rewriteComparison'];
+  const rewriteStarted = Date.now();
 
   if (body.rewriteMode !== 'off' && rawText.trim().length >= MIN_REWRITE_CHARS) {
     const systemPrompt = withChineseVariant(
@@ -250,31 +238,18 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     );
     const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.projectContext);
 
-    const primaryRewrite = (async () => {
-      const primaryStarted = Date.now();
-      if (tier === 'quality') {
-        const region = resolveQwenRewriteRegion(env, continent, body.regionPreference);
-        if (region.apiKey) {
-          try {
-            finalText = await qwenRewrite(region, systemPrompt, userMessage);
-            rewriteEngine = 'qwen-plus';
-            primaryMs = Date.now() - primaryStarted;
-            return;
-          } catch (err) {
-            fallback.rewrite = toReasonCode(err, 'qwen_rewrite');
-          }
-        }
-        if (env.ANTHROPIC_API_KEY) {
-          try {
-            finalText = await haikuRewrite(env, systemPrompt, userMessage);
-            rewriteEngine = HAIKU_MODEL;
-            primaryMs = Date.now() - primaryStarted;
-            return;
-          } catch (err) {
-            fallback.rewrite = fallback.rewrite ?? toReasonCode(err, 'anthropic');
-          }
+    if (tier === 'quality') {
+      const region = resolveQwenRewriteRegion(env, continent, body.regionPreference);
+      if (region.apiKey) {
+        try {
+          finalText = await qwenRewrite(region, systemPrompt, userMessage);
+          rewriteEngine = 'qwen-plus';
+        } catch (err) {
+          fallback.rewrite = toReasonCode(err, 'qwen_rewrite');
         }
       }
+    }
+    if (rewriteEngine === 'none') {
       try {
         finalText = await llamaRewrite(env, systemPrompt, userMessage);
         rewriteEngine = 'cf-llama-3.1-8b-instruct';
@@ -283,25 +258,9 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
         fallback.rewrite = fallback.rewrite ?? toReasonCode(err, 'cf_llama');
         finalText = rawText;
       }
-      primaryMs = Date.now() - primaryStarted;
-    })();
-
-    const shadowAltRewrite =
-      tier === 'quality' && body.compareRewrite && env.ANTHROPIC_API_KEY
-        ? (async () => {
-            const altStarted = Date.now();
-            try {
-              const text = await haikuRewrite(env, systemPrompt, userMessage);
-              rewriteComparison = { altEngine: HAIKU_MODEL, altText: text, altMs: Date.now() - altStarted };
-            } catch (err) {
-              rewriteComparison = { altEngine: HAIKU_MODEL, altError: toReasonCode(err, 'anthropic'), altMs: Date.now() - altStarted };
-            }
-          })()
-        : Promise.resolve();
-
-    await Promise.all([primaryRewrite, shadowAltRewrite]);
+    }
   }
-  const rewriteMs = primaryMs;
+  const rewriteMs = Date.now() - rewriteStarted;
   const totalMs = Date.now() - started;
 
   return {
@@ -313,7 +272,6 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     engines: { asr: asrEngine, rewrite: rewriteEngine },
     timings: { asr_ms: asrMs, rewrite_ms: rewriteMs, total_ms: totalMs },
     ...(fallback.asr || fallback.rewrite ? { fallback } : {}),
-    ...(rewriteComparison ? { rewriteComparison } : {}),
   };
 }
 
