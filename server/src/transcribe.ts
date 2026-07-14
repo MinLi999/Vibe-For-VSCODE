@@ -189,8 +189,19 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     const region = resolveQwenRegion(env, continent, body.regionPreference);
     if (region.apiKey) {
       try {
-        rawText = await qwenTranscribe(region, body.audio, body.language);
-        asrEngine = 'qwen3-asr-flash';
+        const qwenText = await qwenTranscribe(region, body.audio, body.language);
+        // Qwen intermittently returns a DEGENERATE result (empty / single char / hallucinated
+        // noise-description) on audio that clearly HAD speech — reported in the field with the
+        // live level meter visibly reacting. Qwen doesn't throw in that case, so before this
+        // guard we accepted the garbage and 502'd without ever trying Whisper. Treat a
+        // degenerate Qwen result as a soft failure and let the Cloudflare-edge Whisper fallback
+        // take a second shot; only if BOTH come back empty is it genuinely no-speech.
+        if (qwenText.length > 0 && !isNonSpeechTranscript(qwenText)) {
+          rawText = qwenText;
+          asrEngine = 'qwen3-asr-flash';
+        } else {
+          fallback.asr = 'dashscope_empty_result';
+        }
       } catch (err) {
         fallback.asr = toReasonCode(err, 'dashscope');
       }
