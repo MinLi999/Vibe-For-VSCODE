@@ -523,15 +523,7 @@ export class VibeController implements vscode.Disposable {
       this.audioState.reset();
 
       const config = this.sessionConfig ?? this.readConfig();
-      const errMsg = err instanceof Error ? err.message : String(err);
-      const noSpeech =
-        errMsg.includes('no text') ||
-        errMsg.includes('non-speech') ||
-        errMsg.includes('silent') ||
-        errMsg.includes('empty') ||
-        errMsg.includes('502');
-
-      if (noSpeech) {
+      if (this.isNoSpeechError(err)) {
         if (this.vadSegmentsTranscribedCount > 0) {
           // Silent trailing audio is a normal way for a VAD session to end.
           this.finishSession(config);
@@ -669,9 +661,28 @@ export class VibeController implements vscode.Disposable {
         await this.insertWithPaste(finalText, config.insertTarget);
       }
     } catch (err) {
+      // A no-speech 502 on a VAD segment is NORMAL, not a failure: VAD splits at pauses, so the
+      // silence gap between two sentences is itself sent as a segment and legitimately transcribes
+      // to nothing. Recording those as errors surfaced a spurious "N 段转写失败" toast alongside a
+      // perfectly successful session. Only genuine failures (network/auth/real server error) count.
+      if (this.isNoSpeechError(err)) {
+        return;
+      }
       console.error('[VibeFox VAD Segment ASR Error]', err);
       this.sessionErrors.push(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** A "no speech / silent / non-speech" result is a normal VAD outcome (inter-sentence gaps), not a failure. */
+  private isNoSpeechError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return (
+      msg.includes('no text') ||
+      msg.includes('non-speech') ||
+      msg.includes('silent') ||
+      msg.includes('empty') ||
+      msg.includes('502')
+    );
   }
 
   private async transcribeWithProvider(
