@@ -74,6 +74,7 @@ interface ParsedRequest {
   previousTranscript?: string;
   rewriteMode: RewriteMode;
   enginePreference: 'auto' | 'cloudflare';
+  capturePeak?: number;
   chineseVariant: ChineseVariant;
   regionPreference: RegionPreference;
 }
@@ -150,6 +151,8 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
     ? (body['regionPreference'] as RegionPreference)
     : 'auto';
 
+  const capturePeak = typeof body['capturePeak'] === 'number' ? body['capturePeak'] : undefined;
+
   return {
     audio,
     language,
@@ -158,6 +161,7 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
     previousTranscript,
     rewriteMode,
     enginePreference,
+    capturePeak,
     chineseVariant,
     regionPreference,
   };
@@ -229,6 +233,10 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
         // a normal-sized payload that both engines still read as silent points at content, not
         // transport — distinguishes "nothing was recorded" from "recorded audio was silent".
         ` audio_b64_len=${body.audio.length}` +
+        // Decisive split: high capture_peak + empty from BOTH engines = compression/pipeline
+        // dropped the signal; low capture_peak = the mic only captured ambient noise (device/
+        // routing/gain), not the user's voice, despite the level meter appearing to react.
+        (body.capturePeak !== undefined ? ` capture_peak=${body.capturePeak}` : '') +
         (fallback.asr ? ` asr_fallback=${fallback.asr}` : ''),
     );
     throw new HttpError(502, 'Transcription produced no text (silent or non-speech audio)');
