@@ -711,6 +711,7 @@ export class VibeController implements vscode.Disposable {
         rewriteMode: config.rewriteMode,
         chineseVariant: config.chineseVariant,
         regionPreference: config.dashscopeRegion,
+        capturePeak: Math.round(this.recorder.peakAmplitude),
       });
       return {
         text: result.finalText,

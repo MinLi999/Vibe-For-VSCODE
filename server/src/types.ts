@@ -68,6 +68,8 @@ export interface TranscribeRequestBody {
   chineseVariant?: ChineseVariant;
   /** Manual DashScope region override (default 'auto' = continent-based). */
   regionPreference?: RegionPreference;
+  /** Diagnostic only: client-measured peak PCM amplitude of the captured audio (logged on no-speech). */
+  capturePeak?: number;
 }
 
 /** Success response — a strict superset of v1 (`text`/`duration_ms` keep their v1 semantics). */

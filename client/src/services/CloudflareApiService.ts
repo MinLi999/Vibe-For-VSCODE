@@ -21,6 +21,8 @@ export interface TranscribeRequest {
   rewriteMode: RewriteMode;
   chineseVariant?: ChineseVariant;
   regionPreference?: RegionPreference;
+  /** Diagnostic: client-measured peak PCM amplitude of the captured audio (server logs it on no-speech). */
+  capturePeak?: number;
 }
 
 /** Protocol v2 response. v1 servers (only `text`) are mapped into this shape for compatibility. */
