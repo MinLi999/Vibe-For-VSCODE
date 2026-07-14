@@ -634,12 +634,25 @@ export class AudioRecorderService {
         if (code !== 0) {
           reject(new Error(`Compression failed (code ${code}): ${stderr}`));
         } else {
-          resolve(Buffer.concat(mp3Chunks));
+          const mp3 = Buffer.concat(mp3Chunks);
+          // A full-length PCM that compressed to a near-empty MP3 means the pipe write was lost
+          // (EPIPE / backpressure race) — surface it instead of silently uploading a dead clip
+          // that both ASR engines will read as silence.
+          if (mp3.byteLength < 512) {
+            reject(new Error(`Compression produced an empty MP3 (${mp3.byteLength}B from ${pcmBuffer.byteLength}B PCM)`));
+          } else {
+            resolve(mp3);
+          }
         }
       });
 
-      compressor.stdin.write(pcmBuffer);
-      compressor.stdin.end();
+      // A stray EPIPE on stdin (compressor exited early) must not throw as an unhandled error;
+      // route it to the promise so the caller can react rather than losing the write silently.
+      compressor.stdin.on('error', (err) => reject(new Error(`Compression stdin error: ${err.message}`)));
+      // end(buffer) writes then closes in one call, letting Node fully flush a large buffer with
+      // proper backpressure handling — the previous write()+end() pair could drop the tail of a
+      // big (30-60s) PCM buffer under backpressure, yielding a full-length but silent MP3.
+      compressor.stdin.end(pcmBuffer);
     });
   }
 }
