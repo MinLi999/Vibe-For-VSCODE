@@ -37,7 +37,9 @@ export interface RecorderOptions {
   vadSilenceThreshold?: number;
   /** Noise-floor self-calibrating threshold; falls back to the fixed vadSilenceThreshold when false. */
   vadAdaptiveThreshold?: boolean;
-  onSegment?: (segmentMp3: Buffer) => void;
+  /** segmentPeak = the loudest 16-bit PCM chunk average WITHIN this segment (not the whole session),
+   * so the Controller can tell a real-speech segment from a silence-gap segment accurately. */
+  onSegment?: (segmentMp3: Buffer, segmentPeak: number) => void;
   /** Mid-session segment failures (e.g. compression); no UI here — the Controller decides how to surface them. */
   onSegmentError?: (error: Error) => void;
 }
@@ -117,6 +119,9 @@ const CALIBRATION_WINDOW_MS = 500;
 
 /** 16-bit PCM chunk average that maps to a full input meter (typical conversational speech). */
 const LEVEL_CEILING = 2500;
+/** Absolute lower bound for the meter's silence gate — ambient room noise rarely clears this,
+ * real speech clears it easily, so the bars stay flat until someone actually talks. */
+const DISPLAY_GATE_FLOOR = 700;
 
 /**
  * macOS's avfoundation device isn't always released the instant the previous ffmpeg process
@@ -171,6 +176,8 @@ export class AudioRecorderService {
    * capture failure → whole recording near-zero) from "real audio the ASR couldn't read".
    */
   private sessionPeakAmplitude = 0;
+  /** Loudest chunk average within the CURRENT (not-yet-emitted) VAD segment; reset after each split. */
+  private currentSegmentPeak = 0;
   /**
    * Live normalized input level (0..1), updated per PCM chunk, jumps up fast and decays slowly
    * so a status-bar meter reads like a VU meter. 0 when VAD is off (no PCM stream to measure).
@@ -252,6 +259,7 @@ export class AudioRecorderService {
     this.noiseFloor = null;
     this.observedMs = 0;
     this.sessionPeakAmplitude = 0;
+    this.currentSegmentPeak = 0;
     this.currentLevel = 0;
     this.onSegmentError = options.onSegmentError;
 
@@ -484,11 +492,20 @@ export class AudioRecorderService {
       const average = sum / numSamples;
       const durationMs = chunk.byteLength / 32;
       this.sessionPeakAmplitude = Math.max(this.sessionPeakAmplitude, average);
-      // Normalize to 0..1 against a typical-speech ceiling; fast attack, slow release (VU feel).
-      const normalized = Math.min(1, average / LEVEL_CEILING);
-      this.currentLevel = Math.max(normalized, this.currentLevel * 0.65);
+      this.currentSegmentPeak = Math.max(this.currentSegmentPeak, average);
 
       const silenceThreshold = this.updateAdaptiveThreshold(average, durationMs);
+
+      // Display-only meter gate (independent of the VAD split threshold, which can sit as low as
+      // 350 and let a sensitive built-in mic's ambient noise leak through). Real speech averages
+      // well over 1000; ambient room noise rarely clears ~700. Gating at a comfortable margin above
+      // the measured noise floor makes silence a DEAD-FLAT baseline and only true voice moves the
+      // bars. Everything at/below the gate collapses to exactly 0. Fast attack, slow release.
+      const displayGate = Math.max((this.noiseFloor ?? 0) * 3.5, DISPLAY_GATE_FLOOR);
+      const gatedLevel = average <= displayGate ? 0 : (average - displayGate) / Math.max(1, LEVEL_CEILING - displayGate);
+      const normalized = Math.min(1, gatedLevel);
+      this.currentLevel = Math.max(normalized, this.currentLevel * 0.6);
+
       if (average < silenceThreshold) {
         this.silentTimeMs += durationMs;
       } else {
@@ -514,9 +531,11 @@ export class AudioRecorderService {
           this.pcmChunks = [trailingPcm];
           this.totalPcmBytes = trailingPcm.byteLength;
           this.silentTimeMs = 0; // reset silence timer for next segment
+          const segmentPeak = this.currentSegmentPeak;
+          this.currentSegmentPeak = 0; // start tracking the next segment's own peak
 
           if (options.onSegment) {
-            void this.compressAndEmit(segmentPcm, options.onSegment);
+            void this.compressAndEmit(segmentPcm, segmentPeak, options.onSegment);
           }
         }
       }
@@ -591,10 +610,10 @@ export class AudioRecorderService {
     return { averageAmplitude: Math.round(sum / numSamples) };
   }
 
-  private async compressAndEmit(pcm: Buffer, onSegment: (mp3: Buffer) => void): Promise<void> {
+  private async compressAndEmit(pcm: Buffer, segmentPeak: number, onSegment: (mp3: Buffer, segmentPeak: number) => void): Promise<void> {
     try {
       const mp3 = await this.compressToMp3(pcm, this.lastFfmpegPath);
-      onSegment(mp3);
+      onSegment(mp3, segmentPeak);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.onSegmentError?.(new CompressionError(`压缩分段失败(VAD): ${msg}`));

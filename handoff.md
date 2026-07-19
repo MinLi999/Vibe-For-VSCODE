@@ -11,16 +11,21 @@
 >
 > **接手時的建議順序**:先讀本文件抓大局 → 讀 `CLAUDE.md` 抓硬規則 → 讀 `docs/STATE.md` 最上面幾條抓最新進度 → 需要時再深入其他文檔或原始碼。
 
-最後更新:2026-07-14
+最後更新:2026-07-18
 
 ---
 
 ## 一、這是什麼項目
 
-VibeFox —— 語音「Vibe Coding」輸入的閉源 VS Code 擴展。按 `Ctrl+Shift+Space` 說話(中文優先、中英混雜),透過 Cloudflare Worker 轉寫+改寫成乾淨文字,插入 Claude Code / Cline / Copilot Chat 的聊天輸入框或活動編輯器。目標是做成訂閱制產品,賣點是「中英混雜 vibe coding 場景」的口述準確度和項目上下文理解,對標 Wispr Flow、Aqua Voice。
+VibeFox —— 語音「Vibe Coding」輸入。按熱鍵說話(中文優先、中英混雜),透過 Cloudflare Worker 轉寫+改寫成乾淨文字,插入 LLM 聊天輸入框或活動編輯器。目標是做成訂閱制產品,賣點是「中英混雜 vibe coding 場景」的口述準確度和項目上下文理解,對標 Wispr Flow、Aqua Voice。
+
+**現在有兩個前端,共用同一個 Worker 後端 / License Key / 改寫檔位:**
+1. **VS Code 擴展**(`client/`,`Ctrl+Shift+Space`):結果插入 Claude Code / Cline / Copilot Chat 的聊天框或活動編輯器。
+2. **桌面 App**(`desktop/`,`⌘⌥Z`,2026-07-18 新增):Electron 菜單欄應用,把轉寫結果粘進**任何前台應用**的光標處——首要場景是 **Claude 桌面 App** 的聊天框,也適用於瀏覽器/備忘錄等。這是把 VibeFox 做成「系統級語音輸入法」的方向。
 
 技術棧:
 - **client**(`client/`):TypeScript,VS Code Extension,esbuild 打包,零運行時依賴,嚴格 MVC+S 分層。
+- **desktop**(`desktop/`):TypeScript,Electron menu bar 應用,esbuild 打包,**直接 import 複用 `client/src/services/` 的錄音與 API 服務**(那三個服務零 vscode 依賴,是分層清零的紅利)。用 electron-builder 打包成 `VibeFox.app`,以用戶的 **Developer ID 證書**簽名。
 - **server**(`server/`):TypeScript,Cloudflare Worker(native fetch handler),部署地址 `https://vibe-voice-worker.presley-us.workers.dev`。
 
 ---
@@ -71,11 +76,38 @@ VibeFox —— 語音「Vibe Coding」輸入的閉源 VS Code 擴展。按 `Ctrl
 2. 如果確認是新版本(含 stdin.end(buf) 修復)仍然失敗,那壓縮管線硬化沒有根治問題,需要往兩個方向繼續查:
    - **VAD 分段合併的 `Buffer.concat(this.pcmChunks)` 邏輯**(`processPcmChunk` 裡)是否在特定條件下把某一段的 PCM 弄丟或錯位——可以在合併前後加 byte length 的完整性日誌,交叉比對「累計採集的總 bytes」vs「最終送去壓縮的 bytes」。
    - **base64 編碼/HTTP body 傳輸**環節是否在極長字串下出過問題(不太可能,但要排除)。
-3. 監控腳本(`wrangler tail` 篩選 `no_speech|fallback|http_error`)這輪對話裡已經證明很有效,建議繼續用同樣的方法收集更多 `capture_peak` 高值但轉寫為空的案例,attach 上實際的 MP3(可以考慮臨時加一個「診斷模式」把失敗時的 MP3 存到 R2 或直接 base64 回傳給客戶端寫入本地文件,人工用播放器聽一下那段 MP3 到底是不是真的有聲音——這是目前唯一還沒做過的、最直接的驗證手段)。
+3. 監控腳本(`wrangler tail` 篩選 `no_speech|fallback|http_error`)這輪對話裡已經證明很有效,建議繼續用同樣的方法收集更多 `capture_peak` 高值但轉寫為空的案例。
+
+**2026-07-18 更新 —— 診斷手段已內建**:當時說「唯一還沒做過的驗證手段」(把失敗的 MP3 存下來人工聽)現在做好了:
+- 新增隱藏設置 **`vibefox.diagnosticSaveAudio`**(默認關)。打開後,當某段音頻**自身峰值**高卻轉寫為空時,把**實際上傳的 MP3** 落盤到 `$TMPDIR/vibefox-diagnostics/` 並彈出路徑(可在 Finder 顯示),人工播放即可確認「到底是麥克風錄進了靜音,還是音頻有聲但兩個引擎都讀空」。
+- **順帶修正一個誤導**:此前上報服務端的 `capturePeak` 一直是**會話級**峰值,對 VAD 分段是錯的(任一段響過後,句間靜音段也帶著高 peak 上報,難怪監控會看到「高 peak 卻空」——那可能只是正常的句間靜音段)。現在 `onSegment` 一併傳出**每段自己的峰值**,`capturePeak` 與診斷門控都用段級值。
+- **下一步**:用戶再遇到此現象時,讓他打開 `diagnosticSaveAudio`,復現後把落盤的 MP3 發來人工聽——這是定位根因的最後一塊拼圖。用戶當前主力機已從 2017 Intel MBP 換成 **M3 MacBook Air**,近期未再復現(2026-07-18 用戶原話「暫時沒再碰到,後面關注」)。
+
+---
+
+## 四點五、桌面 App(`desktop/`)—— Claude App 語音輸入法(2026-07-18 新增)
+
+> 完整逐條記錄見 `docs/STATE.md` 最上面的 2026-07-18 各條;這裡是導覽。
+
+**是什麼**:Electron 菜單欄應用(`app.dock.hide()`,無窗口),全局熱鍵 **`⌘⌥Z`(Command+Option+Z)**。按一下開始錄音(菜單欄麥克風圖標旁顯示實時電平),再按一下停止→轉寫→**模擬 ⌘V 粘進當前前台應用**(Claude App 聊天框就是普通聚焦文本框,這招通用)。
+
+**關鍵設計 / 踩過的坑(接手必看,別重踩)**:
+1. **同源複用**:直接 `import ../../client/src/services/*`,服務端與 client 服務零改動。License Key 存 **macOS 鑰匙串**(`security` CLI,等價 SecretStorage 紅線);配置 `~/Library/Application Support/VibeFox/config.json` 首啟自動生成。
+2. **熱鍵不能用系統保留鍵**:最初用 `⌃⌥Space`,結果「註冊返回 true 卻永不觸發」——`⌃⌥Space` 是 macOS「切換輸入法」系統快捷鍵,系統搶先攔截。`config.ts` 的 `RESERVED_HOTKEYS` 會把存量壞熱鍵自動遷移。選默認熱鍵必須避開 `defaults read com.apple.symbolichotkeys` 的保留集,也避開 `⌃⇧Space`(那是 VS Code 擴展的)。
+3. **托盤圖標不能用空圖標**:`new Tray(nativeImage.createEmpty())` 在 macOS 上渲染成零寬、看不見也點不到——必須用真實圖標(`assets/trayTemplate.png`,模板圖)。
+4. **自動粘貼需要「輔助功能」權限**:`AXIsProcessTrusted` 在進程內是**緩存值,授權後必須重啟 App 才翻 true**;粘貼動作**不要**卡在這個檢查後面(會誤傷),應永遠嘗試、失敗留剪貼板。
+5. **簽名 = 授權能否長期保持的關鍵**:ad-hoc 簽名每次重打包 cdhash 變 → TCC 授權作廢 → 反覆重授。**已改用用戶自己的 `Developer ID Application: Min Li (CFA9WX4496)` 證書簽名**(electron-builder `mac.identity: "Min Li (CFA9WX4496)"` + `hardenedRuntime` + `build/entitlements.mac.plist` 帶麥克風 entitlement),designated requirement 基於證書+bundle id 而非 cdhash,**TCC 授權跨重打包永久有效**。`dist` 腳本**不加 `--production`**(esbuild 壓縮會讓打包 App 靜默崩潰)、**不 ad-hoc 重簽**(會破壞 Developer ID 簽名)。
+6. **打包/安裝**:`cd desktop && npm run dist` → 產出 `release/mac-arm64/VibeFox.app` → `cp -R` 到 `/Applications`(保簽名不重簽)。用戶機上已裝好、跑通、能粘進 Claude App。
+7. **未做**:notarize(免 Gatekeeper 需 Apple ID 憑證)、開機自啟、Windows/Linux 打包。
 
 ---
 
 ## 五、這輪對話裡完成的所有工作(按時間順序,粗略分組)
+
+### 2026-07-18 這輪(桌面 App + 三個插件 bug)
+- **三個插件 bug**(用戶 M3 Air 實測):①`auto` 插入改「Claude 聊天框優先」(`activeTerminal` 不等於焦點,VS Code 不暴露 webview 焦點);②電平表噪聲門控 + 去隨機抖動(靜音死平線);③空轉寫診斷落盤 `vibefox.diagnosticSaveAudio` + 段級 `capturePeak`。
+- **桌面 App**:見上面「四點五」。
+- 詳見 `docs/STATE.md` 的 2026-07-18 各條。
 
 ### 階段 A:雙引擎重構(Qwen3-ASR + Haiku,已被單引擎化取代)
 協議 v2(`rewriteMode`/`projectContext`/`chineseVariant`/`regionPreference` 等欄位)、區域感知路由(`request.cf.continent`)、按 key 限流(Cloudflare Rate Limiting binding)、兩級上下文載荷(keywords + projectContext)。
@@ -125,6 +157,7 @@ vadSilenceMs (默認 1200)           vadMinDurationMs (默認 3000)
 vadSilenceThreshold (默認 350)     vadAdaptiveThreshold (默認 true)
 rewriteMode (默認 clean)           chineseVariant (默認 simplified-cn)
 dashscopeRegion (默認 auto)        developerModeEnabled (默認 true)
+diagnosticSaveAudio (默認 false,隱藏診斷:有聲卻轉空時落盤 MP3)
 
 已廢棄(首次啟動自動遷移,保留一個版本週期,不要刪):
 llmCorrectionEnabled / llmCorrectionProvider /
@@ -144,7 +177,14 @@ llmCorrectionModel / llmCorrectionCustomEndpoint
 
 ## 九、如果你是接手的新 AI,建議這樣開場
 
-1. 讀這份文件 + `CLAUDE.md`。
+1. 讀這份文件 + `CLAUDE.md`。桌面 App 相關先讀「四點五」+ `desktop/README.md`。
 2. 跑一次 DoD 自查(`docs/03-DOD.md` 或直接呼叫 `/dod` skill)確認當前代碼健康。
-3. 問用戶:「間歇性有聲卻轉空的問題,你最近還有遇到嗎?能不能給我最新一次失敗時的狀態欄截圖(看電平表是不是真的在跳)?」——這是目前唯一的懸而未決的技術問題,值得優先確認。
-4. 如果用戶想繼續推進商業化(定價/支付/月度限流),那是全新的一塊,可以從第六節的研究結論開始接著做。
+3. 桌面 App 已在用戶 M3 Air 上跑通(能粘進 Claude App、Developer ID 簽名、授權永久保持)。若用戶報「桌面 App 又不能粘了」,先查:菜單欄「輔助功能:已授權 ✓」還在嗎?是不是換了機器/證書?
+4. 「間歇性有聲卻轉空」仍是唯一懸而未決的技術問題,但已內建診斷手段(`vibefox.diagnosticSaveAudio`,見第四節)。用戶近期未再復現;下次復現讓他開診斷、把落盤 MP3 發來。
+5. 如果用戶想繼續推進商業化(定價/支付/月度限流),那是全新的一塊,可以從第六節的研究結論開始接著做。
+
+## 十、下一步候選(2026-07-18 收尾時)
+
+- 桌面 App:notarize(公證,免 Gatekeeper 提示,發給別人用時需要)、開機自啟(login item)、Windows/Linux 打包、按住對講。
+- 商業化基礎設施:自助發 key、支付、月度用量軟上限(見第六節)。桌面 App 讓「不用 VS Code 的用戶」也成了潛在客戶,擴大了市場面。
+- 「有聲卻轉空」根因收尾(靠 `diagnosticSaveAudio` 收集失敗 MP3)。

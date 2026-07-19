@@ -18,6 +18,27 @@ export type InsertOutcome =
 
 export class TextInsertionError extends Error {}
 
+/**
+ * Agent chat "focus input" commands, in priority order (Claude Code first — this product's
+ * primary target). Shared by the focus logic and the auto-mode availability probe. Deliberately
+ * excludes the built-in `workbench.action.chat.open`: that command ALWAYS exists, so counting it
+ * would make "an agent panel is available" always true even with no real agent installed.
+ */
+const CHAT_FOCUS_COMMANDS = [
+  'claude-vscode.focus',                     // Claude Code: Focus input (anthropic.claude-code)
+  'claude-vscode.sidebar.open',              // Claude Code: Open in Side Bar (fallback)
+  'cloudcode.gemini.chatView.focus',         // Antigravity IDE (Gemini Chat)
+  'workbench.view.extension.geminiChat',     // Antigravity IDE (alt)
+  'composer.openOrFocus',                    // Cursor Composer
+  'aichat.newfollowupaction',                // Cursor AIChat
+  'composerMode.agent',                      // Cursor Agent Mode
+  'cline.plusButtonClicked',                 // Cline (Claude Dev)
+  'continue.focusContinueInput',             // Continue
+  'cody.chat.focus',                         // Sourcegraph Cody
+  'aws.amazonq.chat.focus',                  // Amazon Q
+  'cascade.openOrFocus',                     // Windsurf (Cascade)
+];
+
 export class TextInserter {
   /** Inserts per the target strategy; returns which path was actually taken so the Controller can notify the user. */
   async insert(text: string, target: InsertTarget): Promise<InsertOutcome> {
@@ -31,6 +52,14 @@ export class TextInserter {
       case 'clipboard':
         return this.intoClipboard(text);
       case 'auto': {
+        // Chat-first (user preference): dictation is aimed at the AI chat panel, so route there
+        // whenever a real agent chat surface exists — even with an editor or terminal also open.
+        // VS Code can't tell a third-party extension whether keyboard focus is inside another
+        // extension's chat webview, so "activeTextEditor/activeTerminal is defined" is NOT a
+        // reliable focus signal; the presence of an agent panel is the better intent signal.
+        if (await this.agentChatAvailable()) {
+          return this.intoChat(text);
+        }
         if (vscode.window.activeTextEditor !== undefined) {
           return this.intoEditor(text);
         }
@@ -44,6 +73,15 @@ export class TextInserter {
         }
       }
     }
+  }
+
+  /** True when a real agent chat panel can be focused (registered focus command or Copilot Chat installed). */
+  private async agentChatAvailable(): Promise<boolean> {
+    const available = new Set(await vscode.commands.getCommands(true));
+    if (CHAT_FOCUS_COMMANDS.some((cmd) => available.has(cmd))) {
+      return true;
+    }
+    return vscode.extensions.getExtension('github.copilot-chat') !== undefined;
   }
 
   private async intoEditor(text: string): Promise<InsertOutcome> {
@@ -87,24 +125,8 @@ export class TextInserter {
     // Copilot Chat even when the user's actual agent panel (e.g. Claude Code) was installed.
     const available = new Set(await vscode.commands.getCommands(true));
 
-    // Priority order: Claude Code (this product's primary target) → other agent panels.
-    const chatCommands = [
-      'claude-vscode.focus',                     // Claude Code: Focus input (anthropic.claude-code)
-      'claude-vscode.sidebar.open',              // Claude Code: Open in Side Bar (fallback)
-      'cloudcode.gemini.chatView.focus',         // Antigravity IDE (Gemini Chat)
-      'workbench.view.extension.geminiChat',     // Antigravity IDE (alt)
-      'composer.openOrFocus',                    // Cursor Composer
-      'aichat.newfollowupaction',                // Cursor AIChat
-      'composerMode.agent',                      // Cursor Agent Mode
-      'cline.plusButtonClicked',                 // Cline (Claude Dev)
-      'continue.focusContinueInput',             // Continue
-      'cody.chat.focus',                         // Sourcegraph Cody
-      'aws.amazonq.chat.focus',                  // Amazon Q
-      'cascade.openOrFocus',                     // Windsurf (Cascade)
-    ];
-
     let focused = false;
-    for (const cmd of chatCommands) {
+    for (const cmd of CHAT_FOCUS_COMMANDS) {
       if (!available.has(cmd)) {
         continue;
       }
