@@ -7,6 +7,9 @@ out/
 *.vsix
 *.tsbuildinfo
 
+# Electron desktop packaging output
+desktop/release/
+
 # Cloudflare / Wrangler
 server/.wrangler/
 server/.dev.vars
