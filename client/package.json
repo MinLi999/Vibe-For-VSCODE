@@ -221,6 +221,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Enable Developer Mode rule-based formatting (e.g. converting 'dot ts' to '.ts', converting 'camel case user profile' to 'userProfile', and converting spoken punctuation words)."
+        },
+        "vibefox.diagnosticSaveAudio": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "诊断用:当某段音频采集峰值电平很高(说明麦克风确实录到声音)、转写结果却为空时,把实际上传的 MP3 保存到系统临时目录并弹出路径,供人工播放确认。仅用于排查「有声却转空」问题,平时保持关闭。"
         }
       }
     }
