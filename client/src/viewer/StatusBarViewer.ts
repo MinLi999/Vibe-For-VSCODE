@@ -87,11 +87,20 @@ export class StatusBarViewer implements vscode.Disposable {
    */
   private meter(level: number): string {
     const clamped = Math.max(0, Math.min(1, level));
+    // The recorder already noise-gates ambient sound to exactly 0, so a near-zero level means
+    // silence → render a dead-flat baseline. Crucially the bars are a PURE function of the level
+    // (no Math.random): a steady level renders steady bars, so the meter only ever moves when the
+    // actual mic level moves — i.e. when someone is really talking. (The old random jitter made it
+    // shimmer non-stop even in silence, which is exactly what made it useless.)
+    if (clamped < 0.05) {
+      return BAR_GLYPHS[0]!.repeat(METER_CELLS);
+    }
     let out = '';
     for (let i = 0; i < METER_CELLS; i++) {
-      // Center cells swing a bit more than the edges; jitter only matters once there's real signal.
-      const centerBoost = 1 - Math.abs(i - (METER_CELLS - 1) / 2) / METER_CELLS;
-      const h = clamped * centerBoost * (0.55 + 0.9 * Math.random());
+      // Static center-weighted shape: middle cells stand taller than the edges at the same level,
+      // giving a waveform silhouette that grows/shrinks with the voice but never twitches on its own.
+      const centerBoost = 1 - 0.35 * (Math.abs(i - (METER_CELLS - 1) / 2) / ((METER_CELLS - 1) / 2));
+      const h = clamped * centerBoost;
       const idx = Math.max(0, Math.min(BAR_GLYPHS.length - 1, Math.round(h * (BAR_GLYPHS.length - 1))));
       out += BAR_GLYPHS[idx];
     }

@@ -4,6 +4,9 @@
  * (SecretStorage), timeout auto-stop, error fallback (all user-facing actionable copy is assembled here).
  */
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { AudioState } from '../models/AudioState';
 import { VocabularyModel, type ContextPayload } from '../models/VocabularyModel';
@@ -42,6 +45,8 @@ interface VibeConfig {
   llmCorrectionModel: string;
   llmCorrectionCustomEndpoint: string;
   developerModeEnabled: boolean;
+  /** Diagnostic: when a transcription comes back empty despite a loud capture, save the exact MP3 sent. */
+  diagnosticSaveAudio: boolean;
 }
 
 /** Unified provider result: cloudflare returns server-side rewrite info; others are ASR-only. */
@@ -154,6 +159,8 @@ export class VibeController implements vscode.Disposable {
   private sessionProcessingMs = 0;
   private sessionEngineLabel = '';
   private readonly sessionErrors: string[] = [];
+  /** Gates the clipboard/paste hint to at most once per recording session (not per VAD segment). */
+  private pasteHintShownThisSession = false;
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -379,6 +386,7 @@ export class VibeController implements vscode.Disposable {
     this.sessionProcessingMs = 0;
     this.sessionEngineLabel = '';
     this.sessionErrors.length = 0;
+    this.pasteHintShownThisSession = false;
     // Context payload + config are frozen per session (VAD segments reuse them instead of
     // re-scanning the workspace and re-reading config on every silence split).
     this.sessionConfig = config;
@@ -398,7 +406,7 @@ export class VibeController implements vscode.Disposable {
           vadMinDurationMs: config.vadMinDurationMs,
           vadSilenceThreshold: config.vadSilenceThreshold,
           vadAdaptiveThreshold: config.vadAdaptiveThreshold,
-          onSegment: config.vadEnabled ? (segmentMp3) => void this.handleVadSegment(segmentMp3) : undefined,
+          onSegment: config.vadEnabled ? (segmentMp3, segmentPeak) => void this.handleVadSegment(segmentMp3, segmentPeak) : undefined,
           onSegmentError: (error) => this.sessionErrors.push(error.message),
         },
         (chunk) => this.audioState.appendChunk(chunk),
@@ -465,9 +473,10 @@ export class VibeController implements vscode.Disposable {
     // the app is working, not frozen.
     const slowHint = setTimeout(() => this.statusBar.showProcessingSlow(), 6000);
 
+    // Hoisted so the catch block can save it for the bug 1c diagnostic (loud capture → empty result).
+    let audioBase64 = '';
     try {
       const config = this.sessionConfig ?? this.readConfig();
-      let audioBase64 = '';
       if (config.vadEnabled && finalMp3 !== null) {
         audioBase64 = finalMp3.toString('base64');
       } else {
@@ -511,11 +520,13 @@ export class VibeController implements vscode.Disposable {
         const outcome = await this.insertWithPaste(finalText, config.insertTarget);
         this.audioState.completeWithText(finalText);
         this.finishSession(config);
-        if (outcome.via === 'clipboard' || outcome.via === 'chat') {
-          void vscode.window.showInformationMessage('VibeFox:转写结果已复制到剪贴板,如果聊天框未自动填入,可直接粘贴(⌘V / Ctrl+V)');
-        }
+        this.maybeShowPasteHint(outcome);
       } else {
         // Trailing segment turned out to be silence — normal end of a VAD session.
+        // If the mic actually captured loud sound yet this transcribed to nothing, save the audio (bug 1c).
+        if (this.recorder.peakAmplitude >= SILENT_CAPTURE_PEAK) {
+          this.saveDiagnosticAudio(config, audioBase64, 'final-empty');
+        }
         this.audioState.reset();
         this.finishSession(config);
       }
@@ -524,6 +535,10 @@ export class VibeController implements vscode.Disposable {
 
       const config = this.sessionConfig ?? this.readConfig();
       if (this.isNoSpeechError(err)) {
+        // Loud capture + no-speech result = the exact bug 1c signature; keep the evidence.
+        if (this.recorder.peakAmplitude >= SILENT_CAPTURE_PEAK) {
+          this.saveDiagnosticAudio(config, audioBase64, 'final-nospeech');
+        }
         if (this.vadSegmentsTranscribedCount > 0) {
           // Silent trailing audio is a normal way for a VAD session to end.
           this.finishSession(config);
@@ -607,9 +622,10 @@ export class VibeController implements vscode.Disposable {
     config: VibeConfig,
     audioBase64: string,
     context: ContextPayload,
+    capturePeak?: number,
   ): Promise<{ finalText: string; engineLabel: string; totalMs: number }> {
     const started = Date.now();
-    const outcome = await this.transcribeWithProvider(config, audioBase64, context);
+    const outcome = await this.transcribeWithProvider(config, audioBase64, context, capturePeak);
 
     // Drop non-speech/hallucinated transcripts ("...", bracketed noise descriptions) BEFORE
     // rewrite and dev-mode rules — checked here (not after) so a legitimately dictated
@@ -637,6 +653,27 @@ export class VibeController implements vscode.Disposable {
     return outcome;
   }
 
+  /**
+   * One hint per session when the text landed via clipboard-and-paste. For the webview chat path
+   * the synthetic ⌘V needs macOS Accessibility permission granted to THIS host app (VS Code /
+   * Cursor / Antigravity — it's per-app, which is exactly why it can work in one IDE but silently
+   * do nothing in another); if it was dropped, the text is still on the clipboard to paste manually.
+   */
+  private maybeShowPasteHint(outcome: InsertOutcome): void {
+    if (outcome.via !== 'clipboard' && !(outcome.via === 'chat' && outcome.needsSystemPaste)) {
+      return;
+    }
+    if (this.pasteHintShownThisSession) {
+      return;
+    }
+    this.pasteHintShownThisSession = true;
+    const accessibilityHint =
+      process.platform === 'darwin'
+        ? '若聊天框没有自动填入,多半是本 IDE 未获「辅助功能」权限:系统设置 → 隐私与安全性 → 辅助功能,勾选当前 IDE(如 Visual Studio Code)后重试;在此之前可直接 ⌘V 粘贴。'
+        : '若聊天框没有自动填入,可直接 Ctrl+V 粘贴。';
+    void vscode.window.showInformationMessage(`VibeFox:转写结果已复制到剪贴板。${accessibilityHint}`);
+  }
+
   private async currentSessionContext(config: VibeConfig): Promise<ContextPayload> {
     if (this.sessionContext !== null) {
       return this.sessionContext;
@@ -644,11 +681,16 @@ export class VibeController implements vscode.Disposable {
     return config.contextHint ? this.buildSessionContext() : { keywords: [], projectContext: '' };
   }
 
-  private async handleVadSegment(segmentMp3: Buffer): Promise<void> {
+  private async handleVadSegment(segmentMp3: Buffer, segmentPeak: number): Promise<void> {
     const config = this.sessionConfig ?? this.readConfig();
+    const segmentBase64 = segmentMp3.toString('base64');
+    // A silence-gap segment legitimately transcribes to nothing; only a segment whose OWN peak was
+    // loud yet came back empty is the bug 1c signature worth capturing (session peak would flag
+    // every inter-sentence gap once any earlier segment was loud).
+    const segmentHadSound = Math.round(segmentPeak) >= SILENT_CAPTURE_PEAK;
     try {
       const context = await this.currentSessionContext(config);
-      const result = await this.processUtterance(config, segmentMp3.toString('base64'), context);
+      const result = await this.processUtterance(config, segmentBase64, context, Math.round(segmentPeak));
       const finalText = this.dedupeAgainstSession(result.finalText);
 
       if (finalText.trim().length > 0) {
@@ -658,7 +700,11 @@ export class VibeController implements vscode.Disposable {
         this.sessionProcessingMs += result.totalMs;
         this.sessionEngineLabel = result.engineLabel;
         // No per-segment toast — progress lives in the status bar; one consolidated summary at session end.
-        await this.insertWithPaste(finalText, config.insertTarget);
+        const outcome = await this.insertWithPaste(finalText, config.insertTarget);
+        this.maybeShowPasteHint(outcome);
+      } else if (segmentHadSound) {
+        // Loud segment but produced nothing — capture it for the bug 1c investigation.
+        this.saveDiagnosticAudio(config, segmentBase64, 'segment-empty', Math.round(segmentPeak));
       }
     } catch (err) {
       // A no-speech 502 on a VAD segment is NORMAL, not a failure: VAD splits at pauses, so the
@@ -666,6 +712,9 @@ export class VibeController implements vscode.Disposable {
       // to nothing. Recording those as errors surfaced a spurious "N 段转写失败" toast alongside a
       // perfectly successful session. Only genuine failures (network/auth/real server error) count.
       if (this.isNoSpeechError(err)) {
+        if (segmentHadSound) {
+          this.saveDiagnosticAudio(config, segmentBase64, 'segment-nospeech', Math.round(segmentPeak));
+        }
         return;
       }
       console.error('[VibeFox VAD Segment ASR Error]', err);
@@ -689,6 +738,7 @@ export class VibeController implements vscode.Disposable {
     config: VibeConfig,
     audioBase64: string,
     context: ContextPayload,
+    capturePeak?: number,
   ): Promise<TranscriptionOutcome> {
     const provider = config.apiProvider;
     // previousTranscript conditioning was REMOVED from every prompt vector: Whisper echoes its
@@ -711,7 +761,9 @@ export class VibeController implements vscode.Disposable {
         rewriteMode: config.rewriteMode,
         chineseVariant: config.chineseVariant,
         regionPreference: config.dashscopeRegion,
-        capturePeak: Math.round(this.recorder.peakAmplitude),
+        // Per-segment peak when available (VAD) so the server logs the segment's OWN loudness,
+        // not the misleading session peak; falls back to session peak on the non-VAD final path.
+        capturePeak: capturePeak ?? Math.round(this.recorder.peakAmplitude),
       });
       return {
         text: result.finalText,
@@ -999,7 +1051,40 @@ export class VibeController implements vscode.Disposable {
       llmCorrectionModel: getWithFallback<string>('llmCorrectionModel', ''),
       llmCorrectionCustomEndpoint: getWithFallback<string>('llmCorrectionCustomEndpoint', '').trim(),
       developerModeEnabled: getWithFallback<boolean>('developerModeEnabled', true),
+      diagnosticSaveAudio: getWithFallback<boolean>('diagnosticSaveAudio', false),
     };
+  }
+
+  /**
+   * Bug 1c diagnostic: an intermittent "the level meter showed sound but the transcription came
+   * back empty" case that both ASR engines read as silence. When enabled, this writes the exact
+   * MP3 we uploaded to disk so the audio can be played back and settled once and for all —
+   * did the mic capture real sound, or did the compression/capture pipeline emit silence?
+   * Gated behind vibefox.diagnosticSaveAudio (default off) so normal sessions never write files.
+   */
+  private saveDiagnosticAudio(config: VibeConfig, audioBase64: string, tag: string, peak = Math.round(this.recorder.peakAmplitude)): void {
+    if (!config.diagnosticSaveAudio || audioBase64.length === 0) {
+      return;
+    }
+    try {
+      const dir = path.join(os.tmpdir(), 'vibefox-diagnostics');
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = path.join(dir, `${tag}-${stamp}-peak${peak}.mp3`);
+      fs.writeFileSync(file, Buffer.from(audioBase64, 'base64'));
+      void vscode.window
+        .showWarningMessage(
+          `VibeFox 诊断:本次转写为空,但采集峰值电平=${peak}(阈值 ${SILENT_CAPTURE_PEAK})。已保存实际上传的音频,请播放确认是否真有声音:${file}`,
+          '在 Finder 中显示',
+        )
+        .then((pick) => {
+          if (pick === '在 Finder 中显示') {
+            void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(file));
+          }
+        });
+    } catch (err) {
+      console.error('[VibeFox Diagnostic Save Error]', err);
+    }
   }
 
   private clearAutoStop(): void {

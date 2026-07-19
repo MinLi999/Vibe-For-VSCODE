@@ -1,0 +1,51 @@
+{
+  "name": "vibefox-desktop",
+  "productName": "VibeFox",
+  "description": "System-wide voice input companion for the Claude desktop app and any focused text field.",
+  "version": "0.1.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../LICENSE",
+  "main": "dist/main.js",
+  "scripts": {
+    "compile": "node esbuild.js",
+    "typecheck": "tsc --noEmit",
+    "start": "npm run compile && electron .",
+    "dist": "npm run compile && electron-builder --mac dir"
+  },
+  "build": {
+    "appId": "com.vibefox.desktop",
+    "productName": "VibeFox",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dir"
+      ],
+      "icon": "build/icon.png",
+      "identity": "Min Li (CFA9WX4496)",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSMicrophoneUsageDescription": "VibeFox 需要使用麦克风来把你的语音转写成文字。"
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}

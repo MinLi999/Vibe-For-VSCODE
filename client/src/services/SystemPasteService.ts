@@ -12,7 +12,7 @@ export class SystemPasteService {
    * Failures (e.g. missing Accessibility permission) are swallowed — the text is already
    * on the clipboard, so the user can paste manually.
    */
-  async simulatePaste(delayMs = 150): Promise<void> {
+  async simulatePaste(delayMs = 220): Promise<void> {
     if (process.platform !== 'darwin') {
       return;
     }
