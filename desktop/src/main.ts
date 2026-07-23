@@ -16,8 +16,8 @@ import { dedupeAgainstSession } from '../../client/src/models/TranscriptDedupe';
 import { TranscriptHistory } from '../../client/src/models/TranscriptHistory';
 import { frontmostAppCategory } from './frontmostApp';
 import { AudioRecorderService, FfmpegNotFoundError } from '../../client/src/services/AudioRecorderService';
-import { ApiError, CloudflareApiService } from '../../client/src/services/CloudflareApiService';
-import type { AppCategory, ChineseVariant, RegionPreference, RewriteMode } from '../../client/src/services/CloudflareApiService';
+import { ApiError, CloudflareApiService, streamingSupported } from '../../client/src/services/CloudflareApiService';
+import type { AppCategory, ChineseVariant, RegionPreference, RewriteMode, TranscriptionStream } from '../../client/src/services/CloudflareApiService';
 import { DesktopConfig, configFilePath, loadConfig, saveConfig } from './config';
 import { clearLicenseKey, getLicenseKey, setLicenseKey } from './licenseStore';
 import { pasteIntoFrontmostApp } from './paste';
@@ -48,6 +48,17 @@ class DesktopApp {
   private history: TranscriptHistory;
   /** Category of the app that was frontmost when recording started (= the paste target). */
   private sessionAppCategory: AppCategory | undefined;
+  /** Active streaming session; whole-session PCM stays buffered for the batch-replay fallback. */
+  private streaming: {
+    stream: TranscriptionStream;
+    pcmChunks: Buffer[];
+    failed: boolean;
+    partial: string;
+    deliveries: Promise<void>;
+    donePromise: Promise<void>;
+    resolveDone: () => void;
+  } | null = null;
+  private streamingUnsupportedNotified = false;
 
   constructor(private readonly userDataDir: string) {
     this.config = loadConfig(userDataDir);
@@ -309,6 +320,15 @@ class DesktopApp {
       this.sessionAppCategory = category;
     });
 
+    if (this.config.streamingMode) {
+      if (streamingSupported()) {
+        this.openStreamingSession(licenseKey);
+      } else if (!this.streamingUnsupportedNotified) {
+        this.streamingUnsupportedNotified = true;
+        this.notify('VibeFox', '当前 Electron 运行时不带全局 WebSocket(需 Node ≥ 22),流式转写不可用,已使用普通模式。');
+      }
+    }
+
     try {
       await this.recorder.start(
         {
@@ -320,8 +340,21 @@ class DesktopApp {
           vadMinDurationMs: this.config.vadMinDurationMs,
           vadSilenceThreshold: this.config.vadSilenceThreshold,
           vadAdaptiveThreshold: this.config.vadAdaptiveThreshold,
-          onSegment: (segmentMp3) => this.enqueueSegment(segmentMp3, licenseKey),
+          onSegment: this.streaming === null ? (segmentMp3) => this.enqueueSegment(segmentMp3, licenseKey) : undefined,
           onSegmentError: (error) => this.sessionErrors.push(error.message),
+          onPcmChunk:
+            this.streaming !== null
+              ? (chunk): void => {
+                  const s = this.streaming;
+                  if (s === null) {
+                    return;
+                  }
+                  s.pcmChunks.push(chunk); // Always buffered — the batch-replay fallback source.
+                  if (!s.failed) {
+                    s.stream.sendAudio(chunk);
+                  }
+                }
+              : undefined,
         },
         (chunk) => {
           this.mp3Chunks.push(chunk); // Only fires in non-VAD mode (plain MP3 stream).
@@ -332,6 +365,7 @@ class DesktopApp {
         },
       );
     } catch (err) {
+      this.closeStreaming();
       if (err instanceof FfmpegNotFoundError) {
         this.notify('VibeFox', `未找到 ffmpeg。请在终端执行:${err.installCommand},或在配置文件里设置 ffmpegPath。`);
       } else {
@@ -345,7 +379,10 @@ class DesktopApp {
     this.maxTimer = setTimeout(() => void this.stopAndFinish(), this.config.maxRecordSeconds * 1000);
     this.levelTimer = setInterval(() => {
       const idx = Math.min(LEVEL_BARS.length - 1, Math.floor(this.recorder.inputLevel * LEVEL_BARS.length));
-      this.setTrayTitle(`🔴${LEVEL_BARS[idx] ?? '▁'}`);
+      // Streaming mode: show the live transcription tail next to the meter (menu bar is narrow).
+      const preview = this.streaming?.partial ?? '';
+      const tail = preview.length > 10 ? `…${preview.slice(-10)}` : preview;
+      this.setTrayTitle(`🔴${LEVEL_BARS[idx] ?? '▁'}${tail.length > 0 ? ` ${tail}` : ''}`);
     }, 250);
     this.setTrayTitle('🔴▁');
   }
@@ -363,6 +400,7 @@ class DesktopApp {
 
   private async cancelRecording(): Promise<void> {
     this.clearRecordingTimers();
+    this.closeStreaming();
     await this.recorder.cancel();
     this.phase = 'idle';
     this.rebuildMenu();
@@ -380,6 +418,13 @@ class DesktopApp {
 
     const licenseKey = await getLicenseKey(this.userDataDir);
     const trailingMp3 = await this.recorder.stop();
+
+    if (this.streaming !== null) {
+      await this.finishStreamingSession(licenseKey);
+      this.finishSession();
+      return;
+    }
+
     if (licenseKey !== null) {
       if (trailingMp3 !== null) {
         this.enqueueSegment(trailingMp3, licenseKey); // VAD mode: compressed trailing PCM.
@@ -391,6 +436,117 @@ class DesktopApp {
 
     await this.segmentQueue; // Wait for every in-flight segment to paste before going idle.
     this.finishSession();
+  }
+
+  // ---- Streaming session (config.streamingMode, docs/04-STREAMING.md M3) ----
+
+  private openStreamingSession(licenseKey: string): void {
+    let resolveDone!: () => void;
+    const donePromise = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    try {
+      const stream = this.api.openTranscriptionStream(
+        this.config.endpoint,
+        licenseKey,
+        {
+          rewriteMode: this.config.rewriteMode,
+          chineseVariant: this.config.chineseVariant,
+          appCategory: this.sessionAppCategory,
+          keywords: this.config.vocabulary,
+          language: this.config.language,
+          vadSilenceMs: this.config.vadSilenceMs,
+        },
+        {
+          onReady: () => {
+            /* Audio is already flowing (buffered until open). */
+          },
+          onPartial: (text) => {
+            if (this.streaming !== null) {
+              this.streaming.partial = text;
+            }
+          },
+          onSegment: (_rawText, finalText) => {
+            const s = this.streaming;
+            if (s !== null) {
+              s.partial = '';
+              s.deliveries = s.deliveries.then(() => this.handleStreamSegment(finalText)).catch(() => undefined);
+            }
+          },
+          onDone: () => resolveDone(),
+          onError: () => {
+            // Quiet degradation: keep recording and buffering; the stop path replays via batch.
+            if (this.streaming !== null) {
+              this.streaming.failed = true;
+              this.streaming.partial = '';
+            }
+            resolveDone();
+          },
+        },
+      );
+      this.streaming = { stream, pcmChunks: [], failed: false, partial: '', deliveries: Promise.resolve(), donePromise, resolveDone };
+    } catch {
+      this.streaming = null; // No WebSocket in this runtime — the batch path takes over untouched.
+    }
+  }
+
+  /** Server already filtered non-speech and ran the rewrite; paste with the usual session dedupe. */
+  private async handleStreamSegment(finalText: string): Promise<void> {
+    const deduped = dedupeAgainstSession(this.sessionTranscript, finalText);
+    if (deduped.trim().length === 0) {
+      return;
+    }
+    this.sessionTranscript = (this.sessionTranscript + ' ' + deduped).trim();
+    this.sessionChars += deduped.length;
+    this.recordHistory(deduped);
+    await this.deliverText(deduped);
+  }
+
+  /** Deliberate teardown (cancel / recorder error): no fallback, no further callbacks. */
+  private closeStreaming(): void {
+    const s = this.streaming;
+    if (s === null) {
+      return;
+    }
+    this.streaming = null;
+    s.stream.close();
+    s.resolveDone();
+  }
+
+  /** Happy path: flush and use the live-pasted segments. Failure/timeout: batch-replay the buffer. */
+  private async finishStreamingSession(licenseKey: string | null): Promise<void> {
+    const s = this.streaming;
+    this.streaming = null;
+    if (s === null) {
+      return;
+    }
+    try {
+      if (!s.failed) {
+        s.stream.finish();
+        const timedOut = await Promise.race([
+          s.donePromise.then(() => false),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 10_000)),
+        ]);
+        await s.deliveries;
+        if (!timedOut && !s.failed) {
+          return;
+        }
+      } else {
+        await s.deliveries;
+      }
+      s.stream.close();
+
+      const pcm = Buffer.concat(s.pcmChunks);
+      if (licenseKey === null || pcm.byteLength < 6400) {
+        return; // Under ~0.2s can't contain speech — an empty take.
+      }
+      const mp3 = await this.recorder.compressPcm(pcm);
+      // processSegment's dedupeAgainstSession trims everything the stream already pasted.
+      this.enqueueSegment(mp3, licenseKey);
+      await this.segmentQueue;
+    } catch (err) {
+      this.sessionErrors.push(err instanceof Error ? err.message : String(err));
+    }
   }
 
   private finishSession(): void {
