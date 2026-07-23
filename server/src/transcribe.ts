@@ -4,7 +4,7 @@ import { whisperTranscribe } from './engines/cfWhisper';
 import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
 import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
 import { HttpError, toReasonCode } from './errors';
-import { isNonSpeechTranscript } from './nonspeech';
+import { isContextEcho, isNonSpeechTranscript } from './nonspeech';
 import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT, withChineseVariant } from './prompts';
 import type {
   ChineseVariant,
@@ -30,7 +30,13 @@ const MAX_PROJECT_CONTEXT_CHARS = 8000;
 const MIN_REWRITE_CHARS = 10;
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
-const LANGUAGE_PATTERN = /^[a-z]{2}$/;
+/**
+ * 'auto' (the v2 client default) means: let Qwen3-ASR auto-detect — the official docs say NOT
+ * to pin a language on mixed-language audio (our zh/en code-switching core case; pinning 'zh'
+ * was dragging English words toward Chinese phonetics). The Whisper fallback still gets an
+ * explicit 'zh' (its auto-detection latency/misdetection rationale is unchanged).
+ */
+const LANGUAGE_PATTERN = /^(auto|[a-z]{2})$/;
 const REWRITE_MODES: readonly RewriteMode[] = ['off', 'clean', 'rewrite'];
 const CHINESE_VARIANTS: readonly ChineseVariant[] = ['simplified-cn', 'simplified-sg-my', 'traditional-tw', 'traditional-hk-mo'];
 const REGION_PREFERENCES: readonly RegionPreference[] = ['auto', 'apac', 'us'];
@@ -101,10 +107,11 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
     throw new HttpError(400, 'Field "audio" is not valid base64');
   }
 
+  // Absent field keeps the historical v1 default ('zh'); v2 clients send 'auto' explicitly.
   let language = 'zh';
   if (body['language'] !== undefined) {
     if (typeof body['language'] !== 'string' || !LANGUAGE_PATTERN.test(body['language'])) {
-      throw new HttpError(400, 'Field "language" must be a two-letter ISO-639-1 code');
+      throw new HttpError(400, 'Field "language" must be "auto" or a two-letter ISO-639-1 code');
     }
     language = body['language'];
   }
@@ -193,16 +200,25 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     const region = resolveQwenRegion(env, continent, body.regionPreference);
     if (region.apiKey) {
       try {
-        const qwenText = await qwenTranscribe(region, body.audio, body.language);
+        const qwenText = await qwenTranscribe(
+          region,
+          body.audio,
+          body.language === 'auto' ? undefined : body.language,
+          body.keywords,
+        );
         // Qwen intermittently returns a DEGENERATE result (empty / single char / hallucinated
         // noise-description) on audio that clearly HAD speech — reported in the field with the
         // live level meter visibly reacting. Qwen doesn't throw in that case, so before this
         // guard we accepted the garbage and 502'd without ever trying Whisper. Treat a
         // degenerate Qwen result as a soft failure and let the Cloudflare-edge Whisper fallback
         // take a second shot; only if BOTH come back empty is it genuinely no-speech.
-        if (qwenText.length > 0 && !isNonSpeechTranscript(qwenText)) {
+        // isContextEcho: the model reciting the injected vocabulary instead of transcribing
+        // (near-silent audio failure mode of the context-biasing channel) is equally degenerate.
+        if (qwenText.length > 0 && !isNonSpeechTranscript(qwenText) && !isContextEcho(qwenText, body.keywords)) {
           rawText = qwenText;
           asrEngine = 'qwen3-asr-flash';
+        } else if (isContextEcho(qwenText, body.keywords)) {
+          fallback.asr = 'dashscope_context_echo';
         } else {
           fallback.asr = 'dashscope_empty_result';
         }
@@ -212,7 +228,12 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     }
   }
   if (asrEngine !== 'qwen3-asr-flash') {
-    rawText = await whisperTranscribe(env, body.audio, body.language, buildInitialPrompt(body.keywords));
+    rawText = await whisperTranscribe(
+      env,
+      body.audio,
+      body.language === 'auto' ? 'zh' : body.language,
+      buildInitialPrompt(body.keywords),
+    );
   }
   const asrMs = Date.now() - started;
 
