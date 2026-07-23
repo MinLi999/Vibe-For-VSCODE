@@ -12,10 +12,17 @@ describe('clampSilenceMs', () => {
 });
 
 describe('realtimeUpstreamUrl', () => {
-  it('builds the Singapore intl endpoint with the workspace id in the host', () => {
+  it('uses the per-workspace Singapore host when a workspace id is configured', () => {
     expect(realtimeUpstreamUrl('ws-abc')).toBe(
       'wss://ws-abc.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime',
     );
+  });
+
+  it('falls back to the legacy shared intl host so streaming works without a workspace id', () => {
+    const expected = 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime';
+    expect(realtimeUpstreamUrl(undefined)).toBe(expected);
+    expect(realtimeUpstreamUrl('')).toBe(expected);
+    expect(realtimeUpstreamUrl('   ')).toBe(expected);
   });
 });
 

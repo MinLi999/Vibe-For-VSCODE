@@ -229,6 +229,7 @@ export class VibeController implements vscode.Disposable {
       vscode.commands.registerCommand('vibefox.diagnoseAudio', () => this.diagnoseAudio()),
       vscode.commands.registerCommand('vibefox.selectRewriteMode', () => this.selectRewriteMode()),
       vscode.commands.registerCommand('vibefox.showHistory', () => this.showHistory()),
+      vscode.commands.registerCommand('vibefox.manageCredentials', () => this.manageCredentials()),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('vibefox.rewriteMode')) {
           this.statusBar.setRewriteMode(this.readConfig().rewriteMode);
@@ -1167,6 +1168,80 @@ export class VibeController implements vscode.Disposable {
   private async clearLicenseKey(): Promise<void> {
     await this.secrets.delete(SECRET_KEY);
     void vscode.window.showInformationMessage('VibeFox:License key 已清除');
+  }
+
+  /**
+   * One place to see and maintain every credential this extension holds. The older
+   * set/clearApiKey commands only ever touched the ACTIVE provider's key; this panel shows
+   * each credential's state and can edit any of them, plus jump to the endpoint setting.
+   * Values live in SecretStorage — they are never displayed, only their presence.
+   */
+  private async manageCredentials(): Promise<void> {
+    const config = this.readConfig();
+    const slots: { label: string; secretName: string; title: string }[] = [
+      { label: 'License Key', secretName: SECRET_KEY, title: 'VibeFox License Key(托管 Worker 鉴权)' },
+      { label: 'Groq API Key', secretName: 'vibefox.groqKey', title: 'Groq API Key' },
+      { label: 'OpenAI API Key', secretName: 'vibefox.openaiKey', title: 'OpenAI API Key' },
+      { label: '阿里云 DashScope API Key', secretName: 'vibefox.aliyunKey', title: '阿里云 DashScope API Key' },
+    ];
+
+    const stored = await Promise.all(slots.map((s) => this.secrets.get(s.secretName)));
+    type Item = vscode.QuickPickItem & { action: 'edit' | 'endpoint'; slotIndex?: number };
+    const items: Item[] = slots.map((slot, i) => ({
+      label: `${stored[i] === undefined ? '$(circle-large-outline)' : '$(pass-filled)'} ${slot.label}`,
+      description: stored[i] === undefined ? '未设置' : '已设置',
+      detail: slot.secretName === SECRET_KEY ? `当前 Provider: ${config.apiProvider}` : undefined,
+      action: 'edit',
+      slotIndex: i,
+    }));
+    items.push({
+      label: '$(link) Worker 服务地址(vibefox.endpoint)',
+      description: config.endpoint || '未设置',
+      detail: '服务端 DashScope 密钥/workspace id 不在这里维护 —— 它们只存在于 Worker(wrangler secret),客户端永远看不到',
+      action: 'endpoint',
+    });
+
+    const pick = await vscode.window.showQuickPick(items, {
+      title: 'VibeFox 凭据管理',
+      placeHolder: '选择要设置或清除的凭据(密钥只存于 SecretStorage,不会显示明文)',
+    });
+    if (pick === undefined) {
+      return;
+    }
+    if (pick.action === 'endpoint') {
+      void vscode.commands.executeCommand('workbench.action.openSettings', 'vibefox.endpoint');
+      return;
+    }
+
+    const slot = slots[pick.slotIndex as number];
+    if (slot === undefined) {
+      return;
+    }
+    const isSet = stored[pick.slotIndex as number] !== undefined;
+    const action = await vscode.window.showQuickPick(
+      isSet ? ['重新设置', '清除'] : ['设置'],
+      { title: slot.label, placeHolder: `${slot.label} — ${isSet ? '已设置' : '未设置'}` },
+    );
+    if (action === undefined) {
+      return;
+    }
+    if (action === '清除') {
+      await this.secrets.delete(slot.secretName);
+      void vscode.window.showInformationMessage(`VibeFox:${slot.label} 已清除`);
+      return;
+    }
+    const input = await vscode.window.showInputBox({
+      title: slot.title,
+      prompt: `输入 ${slot.label}(仅存于 SecretStorage,不进设置文件)`,
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim().length === 0 ? '不能为空' : undefined),
+    });
+    if (input === undefined) {
+      return;
+    }
+    await this.secrets.store(slot.secretName, input.trim());
+    void vscode.window.showInformationMessage(`VibeFox:${slot.label} 已保存`);
   }
 
   private async promptForApiKey(): Promise<void> {

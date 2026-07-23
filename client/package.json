@@ -54,6 +54,10 @@
       {
         "command": "vibefox.showHistory",
         "title": "VibeFox: Transcription History / 转写历史"
+      },
+      {
+        "command": "vibefox.manageCredentials",
+        "title": "VibeFox: Manage Credentials / 凭据管理"
       }
     ],
     "keybindings": [
