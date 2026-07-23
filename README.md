@@ -12,10 +12,13 @@ Generic dictation tools garble code-switched speech like "把 AudioRecorderServi
 
 - **Dual-engine quality tier** — Qwen3-ASR (state-of-the-art Chinese/English code-switching, auto language detection) transcribes; Qwen-Plus rewrites (fillers removed, punctuation fixed, self-corrections folded: "用A…不对,用B" keeps only B). Automatic fallback to Whisper + Llama if anything fails.
 - **Project-aware accuracy** — the VS Code extension mines identifiers from your workspace and biases both the ASR and the rewrite stage, so `dedupeAgainstSession` comes out spelled and cased correctly.
-- **Rewrite modes** — `off` (verbatim) / `clean` (default: fillers, punctuation, identifier casing) / `rewrite` (fold self-corrections, light restructuring, never changes intent).
+- **Personal dictionary** — `vibefox.personalDictionary` (or `vocabulary` in the desktop config) takes the top-priority bias slots for the names and jargon your ASR keeps mishearing.
+- **Rewrite modes** — `off` (verbatim) / `clean` (default: fillers, punctuation, identifier casing) / `rewrite` (fold self-corrections, light restructuring, spoken enumerations become numbered lists — never changes intent).
+- **Streaming mode** (experimental, `vibefox.streamingMode`) — transcribes while you speak and inserts each utterance as it finalizes, with a live preview in the status bar. Falls back to the batch path silently on any failure.
+- **Tone adapts to the target app** — the desktop app detects the frontmost app and lets the rewrite stage match it (chat stays casual, email stays composed); coding targets keep the default dictation tuning.
 - **Chinese variants** — Simplified (CN / SG-MY) and Traditional (TW / HK-MO) output.
 - **Bring your own key** — skip the hosted backend entirely: direct Groq / OpenAI / Alibaba Cloud / custom endpoint support built into the extension.
-- **Privacy** — the server logs engine names, timings, and lengths only. Transcript content is never logged or retained.
+- **Privacy** — the server logs engine names, timings, and lengths only. Transcript content is never logged or retained, and your local transcription history (last 50 entries, browsable from the command palette or tray menu) never leaves your machine.
 
 ## Two frontends, one backend
 
@@ -23,8 +26,10 @@ Generic dictation tools garble code-switched speech like "把 AudioRecorderServi
 |---|---|---|
 | Hotkey | `Ctrl+Shift+Space` | `⌘⌥Z` (configurable) |
 | Output goes to | AI chat input (Claude Code / Cline / Copilot Chat), editor cursor, terminal, or clipboard | Pasted into any frontmost app (Claude desktop app, browser, Notes…) |
-| Project context biasing | ✅ workspace identifier mining | — |
+| Project context biasing | ✅ workspace identifier mining | personal dictionary only |
+| Target-app tone adaptation | — | ✅ |
 | Long dictation | ✅ VAD incremental segmentation (up to 10 min) | ✅ |
+| Local history | ✅ command palette | ✅ tray menu |
 
 Both share the same Cloudflare Worker backend, license key, and rewrite settings.
 
@@ -74,6 +79,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for layering rules and PR guidelines. Int
 
 - Intermittent "no speech detected" on audio that clearly contains speech — under investigation, diagnostics built in (`vibefox.diagnosticSaveAudio`). See [docs/handoff.md](docs/handoff.md) §四.
 - Windows/Linux capture paths (dshow/pulse) are implemented but untested — reports and PRs welcome (`help wanted`).
+- Streaming mode is experimental and Singapore-region only (the international realtime endpoint has no US region), so expect extra round-trip latency from the Americas. It needs a host with a global WebSocket (Node ≥ 22) and a self-hosted backend must set `DASHSCOPE_WORKSPACE_ID`; otherwise clients stay on the batch path.
 
 ## License
 
