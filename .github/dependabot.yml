@@ -1,0 +1,39 @@
+version: 2
+updates:
+  # One entry per workspace — this repo has three independent package.json files.
+  - package-ecosystem: npm
+    directory: /client
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /desktop
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      dev-dependencies:
+        dependency-type: development
+    ignore:
+      # Electron majors change the bundled Node/Chromium and need a packaging +
+      # code-signing revalidation pass, so they are upgraded deliberately, not by bot.
+      - dependency-name: electron
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
