@@ -4,11 +4,11 @@
 ## 1. 业务目标
 
 为使用 LLM 聊天扩展(Claude Code、Cline、Copilot Chat)的开发者提供**语音输入**:按下热键说需求(中文优先,中英混杂夹带代码词汇),松手后 2~4 秒内把**清理/润色后的**转写文本插入聊天框/光标处/终端/剪贴板。核心卖点(对标 Wispr Flow / Aqua Voice,差异化=中英混杂编程口述唯一深度优化):
-- **双引擎质量档**:订阅链路 = **Qwen3-ASR**(2026 中英 code-switching SOTA 梯队,纯音频输入,不做任何文本级偏置注入)+ **Claude Haiku 4.5** 改写(去填充词/口误自纠折叠/标识符保真,项目词表与背景在此阶段介入);免费档 = CF Whisper + llama,自动降级兜底。
-- **项目级上下文**:两级载荷 —— 排序词表(40,喂给 Whisper 的 initial_prompt 偏置 + 改写阶段的标识符校正)+ 自由文本 projectContext(≤2000 字符,当前文件符号/工作区高频标识符/相关文件,保留原始大小写,喂给改写阶段辅助理解术语),专有名词靠改写阶段的词表校正还原,不做 ASR 端偏置。
+- **双引擎质量档**:订阅链路 = **Qwen3-ASR**(2026 中英 code-switching SOTA 梯队,语言自动检测 + 实体词表 context 偏置,带复读 guard)+ **Qwen-Plus** 改写(去填充词/口误自纠折叠/标识符保真,项目背景在此阶段介入);免费档 = CF Whisper + llama,自动降级兜底。
+- **项目级上下文**:两级载荷 —— 排序词表(40,喂给 Qwen3-ASR 的 system-message 实体词表偏置 + Whisper 的 initial_prompt 偏置 + 改写阶段的标识符校正)+ 自由文本 projectContext(≤2000 字符,当前文件符号/工作区高频标识符/相关文件,保留原始大小写,**只喂给改写阶段**辅助理解术语,绝不进 ASR)。
 - **改写三档**:`rewriteMode` = off / clean(默认,去填充词修标点校标识符)/ rewrite(折叠"用A…不对,用B"式口误自纠、轻度重组,不改意图)。
-- **低延迟**:语言锁 `zh` 绕过自动检测;区域感知路由(亚太→DashScope 新加坡,其余→美国区);短文本跳过改写;质量档端到端 2.2~4.0s。
-- **商业化就绪**:License Key 鉴权(Cloudflare KV,`plan:"pro"` 元数据路由质量档),按 key 限流,闭源分发 .vsix。
+- **低延迟**:语言默认 `auto`(Qwen3-ASR 自动检测,官方对混合语种的推荐;Whisper 兜底仍锁 `zh` 绕过其检测延迟);区域感知路由(亚太→DashScope 新加坡,其余→美国区);短文本跳过改写;质量档端到端 2.2~4.0s。
+- **商业化就绪**:License Key 鉴权(Cloudflare KV,`plan:"pro"` 元数据路由质量档),按 key 限流;**2026-07-23 起转为开源 open core 模式**(见 §4)。
 
 ## 2. 功能矩阵(当前生效)
 
@@ -28,8 +28,9 @@
 ### 模块 B:上下文两级载荷
 - 业务逻辑:每**录音会话**构建一次(VAD 分段复用,不重复扫描):
   1. `keywords[]`(≤40,排序:活动文档 top20 → 工作区全局 top15 → 其他标签页 → 文件名词干)——供 Whisper 兜底路径的 `initial_prompt` 偏置(800 字节预算);
-  2. `projectContext`(≤2000 字符自由文本:项目名/当前文件+语言/当前文件符号 top30/工作区高频标识符 top100/相关文件,保留原始大小写)——**不发给 ASR**(阿里云官方文档未证实同步接口支持文本级偏置,早期"system 消息"实现曾导致该文本被模型当成转写内容读出来,已改为纯音频请求),改喂给改写阶段的用户消息,辅助 Haiku/Qwen-Plus 理解项目术语并校正标识符拼写。
+  2. `projectContext`(≤2000 字符自由文本:项目名/当前文件+语言/当前文件符号 top30/工作区高频标识符 top100/相关文件,保留原始大小写)——**不发给 ASR**(2026-07-19 复核官方文档:同步接口的"定制化识别"支持的是**实体词表/背景文本**,不支持指令式自由文本;早期把这段 free-form 文本塞进 system 消息曾被模型当成转写内容读出来),只喂给改写阶段的用户消息,辅助 Qwen-Plus 理解项目术语并校正标识符拼写。`keywords` 词表则**同时**以纯实体列表形式作为 Qwen3-ASR 的 system-message context 偏置(服务端 `isContextEcho` guard:输出与词表高度重合即判定复读、降级 Whisper)。
 - 工作区全局词频:`WorkspaceContextService` 后台扫描 ≤300 个源码文件(>256KB 跳过),保存/删除增量更新。
+- **个人词典**(2026-07-23):`vibefox.personalDictionary`(字符串数组,默认空)——用户手工维护的人名/产品名/团队术语,以**最高优先级**进入 keywords 词表(排在活动文档挖掘之前,大小写以词典拼写为准);`contextHint` 关闭时词典仍然生效。桌面端等价物 = config.json 的 `vocabulary`(既有)。
 - 分层影响面:
   - View:`EditorContextViewer`(只读文本快照 + activeFilePath/languageId/workspaceName,零业务)
   - Model:`VocabularyModel.buildPayload`(regex/词频/停用词/两级载荷拼装,按文档版本缓存)
@@ -76,8 +77,26 @@
 - 差异点:桌面端无工作区可挖,`keywords`/`projectContext` 为空 —— 改写阶段仍做填充词清理与标点;不做 IDE 上下文偏置。
 - 分层影响面:`desktop/src/main.ts`(controller)+ `config.ts`/`licenseStore.ts`/`paste.ts`(service);client 服务零改动。
 
+### 模块 I:本地转写历史(2026-07-23 新增)
+- 业务逻辑:最近 50 条插入过的最终文本仅存本机(隐私承诺:历史绝不上云)。**记录时机在插入之前**,粘贴目标拒收时文本也不丢。
+- 扩展端:存 `globalState`;命令 `vibefox.showHistory` → QuickPick(选中复制到剪贴板,含「清空历史」项)。
+- 桌面端:存 `history.json`(config.json 同目录);托盘菜单「转写历史(仅本机)」子菜单显示最近 10 条,点击复制,含「清空历史」。
+- 分层影响面:Model:`TranscriptHistory`(纯函数,client/desktop 共享,含持久化数据消毒);Controller/desktop main 负责持久化与 UI 调度。
+
 ## 3. 绝对禁止(Out of Scope)
-- Marketplace 发布/签名流程、支付/授权门户(key 用 wrangler CLI 手工发放)。
-- WebSocket 实时流式转写(客户端 VAD 增量已覆盖长录音场景;真流式等 Phase 3)。
+- 支付/授权门户(key 用 wrangler CLI 手工发放;Marketplace 发布已解禁但仅手动执行,不自动发布)。
 - 捆绑 ffmpeg/sox 二进制((L)GPL 风险);webview 录音(权限不可靠,已评估否决)。
-- Windows/Linux 的人工实测(代码路径保留,本机 macOS 无法验证)。
+- Windows/Linux 的人工实测(代码路径保留,本机 macOS 无法验证;开源后标 `help wanted` 借助社区)。
+- 实时语音翻译(Typeless 有,但非目标用户核心需求,不做)。
+
+## 4. 开源化与对标 Typeless 路线图(2026-07-23 拍板)
+
+**决策**:全仓开源(client/server/desktop),license = **AGPL-3.0-only**(防止云厂商闭源托管服务端)。商业模式 = **open core**:代码完全可自托管(自部署 Worker + 自备 DashScope key,或 BYOK 直连 groq/openai/aliyun 无需服务端),官方托管 Worker + License Key 发放作为付费便利服务(定价锚点:Typeless 年付 $12/月,本产品 $9–12/月 + BYOK 全免费)。差异化打 Typeless 被评测点名的弱项:不支持 BYOK、无开发者集成(MCP)、云强依赖无离线、闭源不可审计。
+
+**Phase A 开源就绪**(本期):LICENSE + 三包 license 字段;仓库清洗(1.md 删除、handoff.md 移入 docs/、git 历史密钥扫描已确认干净);英文 README / docs/SELF_HOSTING.md / CONTRIBUTING.md / issue 模板;GitHub Actions CI(三端 typecheck+build+测试);回归用例固化为 vitest(nonspeech/isContextEcho/dedupeAgainstSession);`dedupeAgainstSession` 抽为共享纯函数消除 client/desktop 双份副本。
+
+**Phase B 体验追平 Typeless**:①流式转写(`qwen3-asr-flash-realtime` WS 代理,松手即出)——**设计已完成**,见 docs/04-STREAMING.md(关键调研结论:国际版 realtime 只有新加坡区、协议为 OpenAI Realtime 风格、官方未记载词表偏置);②个人词典 ✅ 2026-07-23(模块 B);③本地转写历史 ✅ 2026-07-23(模块 I);④桌面端前台应用感知 tone hint(按 bundle id 分类 IDE/聊天/邮件);⑤rewrite 档自动结构化排版(口述列表→有序条目)。
+
+**Phase C 平台覆盖**:Windows 实测(dshow + electron-builder win + SendInput 粘贴,社区优先);macOS 公证 + 自动更新 + 开机自启;Linux(pulse)最低优先级。
+
+**Phase D 开源护城河**:MCP server(语音输入暴露为 agent 工具);whisper.cpp 离线档;语音编辑指令(最低优先级)。
