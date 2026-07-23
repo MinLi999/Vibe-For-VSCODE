@@ -19,6 +19,13 @@ export interface Env {
    */
   DASHSCOPE_API_KEY_APAC?: string;
   DASHSCOPE_API_KEY_US?: string;
+  /**
+   * Model Studio workspace id for the realtime WebSocket endpoint (it is part of the
+   * hostname: wss://{id}.ap-southeast-1.maas.aliyuncs.com). Singapore only — the
+   * international realtime endpoint has no US region (docs/04-STREAMING.md).
+   * `wrangler secret put DASHSCOPE_WORKSPACE_ID`.
+   */
+  DASHSCOPE_WORKSPACE_ID?: string;
   /** Region-aware DashScope endpoints/models (wrangler.jsonc vars; see resolveQwenRegion). */
   DASHSCOPE_BASE_URL_APAC?: string;
   DASHSCOPE_BASE_URL_US?: string;
