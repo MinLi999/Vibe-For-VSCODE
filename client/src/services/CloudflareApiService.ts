@@ -8,6 +8,8 @@ export type RewriteMode = 'off' | 'clean' | 'rewrite';
 export type ChineseVariant = 'simplified-cn' | 'simplified-sg-my' | 'traditional-tw' | 'traditional-hk-mo';
 /** Manual DashScope region override; 'auto' = server routes by the request's continent. */
 export type RegionPreference = 'auto' | 'apac' | 'us';
+/** Paste-target app category; the server's rewrite stage adapts punctuation/formality to it. */
+export type AppCategory = 'ide' | 'terminal' | 'chat' | 'email' | 'notes' | 'other';
 
 /** Protocol v2 request (server/src/types.ts TranscribeRequestBody). Prompts/models are server-owned. */
 export interface TranscribeRequest {
@@ -24,6 +26,8 @@ export interface TranscribeRequest {
   regionPreference?: RegionPreference;
   /** Diagnostic: client-measured peak PCM amplitude of the captured audio (server logs it on no-speech). */
   capturePeak?: number;
+  /** Paste-target app category (desktop frontend sends it; extension omits = ide-tuned default). */
+  appCategory?: AppCategory;
 }
 
 /** Protocol v2 response. v1 servers (only `text`) are mapped into this shape for compatibility. */

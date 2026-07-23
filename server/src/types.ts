@@ -42,6 +42,14 @@ export type ChineseVariant = 'simplified-cn' | 'simplified-sg-my' | 'traditional
 export type RegionPreference = 'auto' | 'apac' | 'us';
 
 /**
+ * Category of the app the text will be pasted into (desktop frontend sends it from the
+ * frontmost app's bundle id). The rewrite stage adapts punctuation/formality per category
+ * without ever overriding the core no-content-change rules.
+ */
+export const APP_CATEGORIES = ['ide', 'terminal', 'chat', 'email', 'notes', 'other'] as const;
+export type AppCategory = (typeof APP_CATEGORIES)[number];
+
+/**
  * POST /api/transcribe request body.
  * v2 is detected by the presence of `rewriteMode`. v1 fields (`llmCorrect`) are still honored
  * (`llmCorrect: true` maps to `rewriteMode: 'clean'`); v1 `llmPrompt`/`llmModel` are parsed but
@@ -74,6 +82,8 @@ export interface TranscribeRequestBody {
   regionPreference?: RegionPreference;
   /** Diagnostic only: client-measured peak PCM amplitude of the captured audio (logged on no-speech). */
   capturePeak?: number;
+  /** Paste-target app category (desktop frontend); unknown values are ignored. */
+  appCategory?: AppCategory;
 }
 
 /** Success response — a strict superset of v1 (`text`/`duration_ms` keep their v1 semantics). */

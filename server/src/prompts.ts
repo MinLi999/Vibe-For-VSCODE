@@ -27,11 +27,12 @@ export const REWRITE_SYSTEM_PROMPT = `你是一个语音输入改写器，把口
 4. 严格按参考词表还原代码标识符、文件名、API 名的正确拼写与大小写；词表之外的英文术语保持说话人的原始说法；产品/专有名词保持完整不要截短（"Claude Code"不要变成"CLAUDE"或丢掉"Code"）；
 5. 口述的符号词（如"等号""左大括号""驼峰命名"）保留原样文字，不要转换成符号；
 6. 保留中英混排风格：说话人用英文说的术语与句子保持英文，不做翻译；
-7. 保持第一人称指令语气，输出长度不超过原文。
+7. 口述中的顺序列举（"第一……第二……""首先……其次……""一是……二是……"、英文"first… second…"）整理成逐行编号列表：每一点独立一行、以"1. ""2. "开头；编号被说话人改口重开时按第 2 条只保留最终版本；只在说话人明确逐点列举时才用列表，除此之外不要引入原文没有的格式；
+8. 保持第一人称指令语气，输出长度不超过原文（列表编号与换行不计入）。
 只输出改写后的纯文本，不要任何解释、前缀、引号或 Markdown 包裹。
-8.【空字符串规则，范围很窄】只有输入完全是对声音/噪音/音乐的纯描述（如"(音频中充斥着机械噪音)"）而完全没有任何人类语言内容时才输出空字符串——日常对话、闲聊、任何主题的完整人类语句都不适用这条，必须正常改写输出。`;
+9.【空字符串规则，范围很窄】只有输入完全是对声音/噪音/音乐的纯描述（如"(音频中充斥着机械噪音)"）而完全没有任何人类语言内容时才输出空字符串——日常对话、闲聊、任何主题的完整人类语句都不适用这条，必须正常改写输出。`;
 
-import type { ChineseVariant } from './types';
+import type { AppCategory, ChineseVariant } from './types';
 
 /**
  * Per-variant output instruction appended to the system prompt. The ASR raw text arrives in
@@ -53,6 +54,27 @@ const CHINESE_VARIANT_INSTRUCTIONS: Record<ChineseVariant, string> = {
 /** Appends the output-variant instruction (no-op for the default Mainland Simplified). */
 export function withChineseVariant(systemPrompt: string, variant: ChineseVariant | undefined): string {
   const instruction = CHINESE_VARIANT_INSTRUCTIONS[variant ?? 'simplified-cn'];
+  return instruction ? systemPrompt + instruction : systemPrompt;
+}
+
+/**
+ * Per-paste-target tone instruction (desktop frontend sends the frontmost app's category).
+ * Deliberately subordinate to every core rule — it may adjust punctuation/formality only,
+ * never content. ide/terminal are no-ops: the base prompts are already tuned for coding
+ * dictation, which is also the safe default when no category is known.
+ */
+const APP_TONE_INSTRUCTIONS: Record<AppCategory, string> = {
+  ide: '',
+  terminal: '',
+  other: '',
+  chat: '\n输出将被粘贴进聊天应用的输入框：在不违反上述任何规则的前提下，保持轻松自然的语气，不要把随意的聊天强行改成书面公文腔。',
+  email: '\n输出将被粘贴进邮件正文：在不违反上述任何规则的前提下，使用完整句子与规范标点，语气得体；不改变说话人的内容、称谓与署名。',
+  notes: '\n输出将被粘贴进笔记应用：在不违反上述任何规则的前提下，标点与分行以便于日后阅读为准。',
+};
+
+/** Appends the paste-target tone instruction (no-op for ide/terminal/unknown). */
+export function withAppTone(systemPrompt: string, category: AppCategory | undefined): string {
+  const instruction = category ? APP_TONE_INSTRUCTIONS[category] : '';
   return instruction ? systemPrompt + instruction : systemPrompt;
 }
 
