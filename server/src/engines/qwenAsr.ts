@@ -41,22 +41,29 @@ interface QwenResponseShape {
 /**
  * Synchronous transcription via DashScope's multimodal-generation endpoint.
  *
- * NOTE: an earlier version of this function also sent a `{ role: 'system', content: [...] }`
- * message carrying a free-form "context enhancement" corpus (project vocabulary/background),
- * based on an unofficial third-party summary. Alibaba's actual API reference does NOT document
- * that mechanism for this synchronous endpoint — the only hint of a context parameter anywhere
- * in the official docs is a commented-out `parameters.corpus.text` field on a DIFFERENT
- * (async file-transcription) endpoint/model. In production, that system message was observed
- * being echoed back verbatim as the "transcription" (the model treated it as conversational
- * content to read out, not as silent bias) — a real prompt-injection-style contamination bug.
- * Fixed by sending audio-only requests here; vocabulary/identifier correction now happens
- * exclusively in the (verified-safe) text rewrite stage — see prompts.ts buildRewriteUserMessage.
+ * Context biasing (re-verified 2026-07-19 against the official Qwen-ASR API reference,
+ * help.aliyun.com/zh/model-studio/qwen-asr-api-reference): the docs DO document "定制化识别"
+ * for this synchronous endpoint — a system message as the FIRST element of `messages`,
+ * carrying "背景文本和实体词表" (background text and entity vocabulary), up to 10k tokens.
+ * They equally state it does NOT support role-style system prompts, which explains the
+ * 2026-07-12 incident: we injected a long free-form instruction paragraph and the model
+ * read it back out as the "transcription". This re-enabled version therefore only sends a
+ * bare entity list (the client keyword vocabulary, no scaffold sentences, no projectContext),
+ * and the caller runs every result through isContextEcho() before trusting it — an echo is
+ * treated as a degenerate result and falls back to Whisper.
+ * Free-form projectContext stays rewrite-stage-only — see prompts.ts buildRewriteUserMessage.
  */
-export async function qwenTranscribe(region: QwenRegion, audioBase64: string, language: string | undefined): Promise<string> {
+export async function qwenTranscribe(
+  region: QwenRegion,
+  audioBase64: string,
+  language: string | undefined,
+  contextWords: string[] = [],
+): Promise<string> {
   if (!region.apiKey) {
     throw new EngineError('asr', 'dashscope_not_configured');
   }
 
+  const context = contextWords.join(', ');
   const res = await fetch(`${region.baseUrl}/api/v1/services/aigc/multimodal-generation/generation`, {
     method: 'POST',
     headers: {
@@ -66,7 +73,10 @@ export async function qwenTranscribe(region: QwenRegion, audioBase64: string, la
     body: JSON.stringify({
       model: region.model,
       input: {
-        messages: [{ role: 'user', content: [{ audio: `data:audio/mpeg;base64,${audioBase64}` }] }],
+        messages: [
+          ...(context.length > 0 ? [{ role: 'system', content: [{ text: context }] }] : []),
+          { role: 'user', content: [{ audio: `data:audio/mpeg;base64,${audioBase64}` }] },
+        ],
       },
       parameters: {
         asr_options: {

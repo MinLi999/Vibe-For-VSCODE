@@ -50,7 +50,11 @@ export type RegionPreference = 'auto' | 'apac' | 'us';
 export interface TranscribeRequestBody {
   /** Base64-encoded MP3 (16kHz mono, compressed client-side). */
   audio: string;
-  /** ISO-639-1; defaults to "zh", passed explicitly to the ASR engine to bypass auto-detection latency. */
+  /**
+   * "auto" (v2 client default) or ISO-639-1. 'auto' lets Qwen3-ASR self-detect (official
+   * recommendation for mixed zh/en audio); the Whisper fallback still receives an explicit
+   * 'zh' lock. Absent field keeps the historical default 'zh'.
+   */
   language?: string;
   /** Ranked code identifiers extracted by the client (variable names / filenames). */
   keywords?: string[];
