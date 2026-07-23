@@ -70,12 +70,22 @@ export class StatusBarViewer implements vscode.Disposable {
    * `levelProvider` returns 0..1 (0 when VAD is off / no PCM to measure → meter stays flat but the
    * $(record) icon + timer still confirm recording is active).
    */
-  showRecording(elapsedSecondsProvider: () => number, maxSeconds: number, levelProvider: () => number): void {
+  showRecording(
+    elapsedSecondsProvider: () => number,
+    maxSeconds: number,
+    levelProvider: () => number,
+    previewProvider?: () => string,
+  ): void {
     this.stopTimers();
     this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
     this.item.tooltip = '录音中 —— 波形跟随你的声音跳动即表示麦克风正常;再按一次停止并转写,Esc 取消';
     const render = (): void => {
-      this.item.text = `$(record) ${this.meter(levelProvider())} ${elapsedSecondsProvider()}s/${maxSeconds}s`;
+      // Streaming mode feeds a live transcription preview (tail only — the status bar is narrow).
+      const preview = previewProvider?.() ?? '';
+      const tail = preview.length > 24 ? `…${preview.slice(-24)}` : preview;
+      this.item.text =
+        `$(record) ${this.meter(levelProvider())} ${elapsedSecondsProvider()}s/${maxSeconds}s` +
+        (tail.length > 0 ? `「${tail}」` : '');
     };
     render();
     this.waveTimer = setInterval(render, METER_INTERVAL_MS);

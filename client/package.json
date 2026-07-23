@@ -154,6 +154,12 @@
           "default": [],
           "markdownDescription": "个人词典:ASR 经常听错的人名/产品名/团队术语(如 `Anthropic`、`wrangler`)。这些词以最高优先级进入词表偏置与改写校正,即使 `#vibefox.contextHint#` 关闭也生效。服务端词表上限 40,词典过长会挤占自动挖掘的项目词。/ Personal dictionary: names and jargon the ASR keeps mishearing. Highest-priority bias slots; works even with `#vibefox.contextHint#` off."
         },
+        "vibefox.streamingMode": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "流式转写(实验性,质量档专用):录音过程中实时转写,松手即出结果,整句定稿后立即插入。要求服务端已配置 realtime 支持;任何失败自动无感降级到普通批量转写。/ Experimental streaming transcription (pro tier): utterances are transcribed while you speak and inserted as they finalize. Silently falls back to the batch path on any failure.",
+          "tags": ["experimental"]
+        },
         "vibefox.vadEnabled": {
           "type": "boolean",
           "default": true,
