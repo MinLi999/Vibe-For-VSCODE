@@ -14,9 +14,10 @@ import * as path from 'node:path';
 
 import { dedupeAgainstSession } from '../../client/src/models/TranscriptDedupe';
 import { TranscriptHistory } from '../../client/src/models/TranscriptHistory';
+import { frontmostAppCategory } from './frontmostApp';
 import { AudioRecorderService, FfmpegNotFoundError } from '../../client/src/services/AudioRecorderService';
 import { ApiError, CloudflareApiService } from '../../client/src/services/CloudflareApiService';
-import type { ChineseVariant, RegionPreference, RewriteMode } from '../../client/src/services/CloudflareApiService';
+import type { AppCategory, ChineseVariant, RegionPreference, RewriteMode } from '../../client/src/services/CloudflareApiService';
 import { DesktopConfig, configFilePath, loadConfig, saveConfig } from './config';
 import { clearLicenseKey, getLicenseKey, setLicenseKey } from './licenseStore';
 import { pasteIntoFrontmostApp } from './paste';
@@ -45,6 +46,8 @@ class DesktopApp {
   private pasteHintShown = false; // Gates the "no accessibility → on clipboard" hint to once per session.
   /** Local-only transcription history (history.json next to config.json; never leaves the machine). */
   private history: TranscriptHistory;
+  /** Category of the app that was frontmost when recording started (= the paste target). */
+  private sessionAppCategory: AppCategory | undefined;
 
   constructor(private readonly userDataDir: string) {
     this.config = loadConfig(userDataDir);
@@ -299,6 +302,12 @@ class DesktopApp {
     this.sessionChars = 0;
     this.sessionErrors = [];
     this.pasteHintShown = false;
+    // The app under the cursor when the hotkey fires is the paste target — capture its
+    // category (fire-and-forget) so the rewrite stage can adapt tone. Failure → no hint.
+    this.sessionAppCategory = undefined;
+    void frontmostAppCategory().then((category) => {
+      this.sessionAppCategory = category;
+    });
 
     try {
       await this.recorder.start(
@@ -443,6 +452,7 @@ class DesktopApp {
         chineseVariant: this.config.chineseVariant,
         regionPreference: this.config.dashscopeRegion,
         capturePeak: Math.round(this.recorder.peakAmplitude),
+        appCategory: this.sessionAppCategory,
       });
       const finalText = dedupeAgainstSession(this.sessionTranscript, result.finalText);
       if (finalText.trim().length === 0) {
