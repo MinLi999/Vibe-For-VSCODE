@@ -28,9 +28,17 @@ export function clampSilenceMs(requested: number | undefined): number {
   return Math.min(2000, Math.max(400, Math.round(requested)));
 }
 
-/** wss URL for the Singapore international realtime endpoint (the only intl region, see docs). */
-export function realtimeUpstreamUrl(workspaceId: string, model = 'qwen3-asr-flash-realtime'): string {
-  return `wss://${workspaceId}.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime?model=${model}`;
+/**
+ * wss URL for the Singapore international realtime endpoint (the only intl region, see docs).
+ * With a workspace id we use the per-workspace host Alibaba recommends for stability; without
+ * one the legacy shared intl domain still serves the same path, so streaming works with nothing
+ * but the DashScope API key configured.
+ */
+export function realtimeUpstreamUrl(workspaceId: string | undefined, model = 'qwen3-asr-flash-realtime'): string {
+  const host = workspaceId && workspaceId.trim().length > 0
+    ? `${workspaceId.trim()}.ap-southeast-1.maas.aliyuncs.com`
+    : 'dashscope-intl.aliyuncs.com';
+  return `wss://${host}/api-ws/v1/realtime?model=${model}`;
 }
 
 /** First JSON frame sent upstream: session config with server-side utterance detection. */
@@ -144,7 +152,8 @@ export async function handleRealtime(request: Request, env: Env): Promise<Respon
   if (auth.metadata?.plan !== 'pro') {
     return new Response(JSON.stringify({ error: 'Streaming transcription requires a pro plan' }), { status: 403 });
   }
-  if (!env.DASHSCOPE_WORKSPACE_ID || !env.DASHSCOPE_API_KEY_APAC) {
+  // Only the API key is mandatory; the workspace id merely upgrades the upstream host.
+  if (!env.DASHSCOPE_API_KEY_APAC) {
     return new Response(JSON.stringify({ error: 'Streaming is not configured on this server' }), { status: 503 });
   }
 
@@ -171,7 +180,7 @@ export async function handleRealtime(request: Request, env: Env): Promise<Respon
 
 /** Drives one streaming session: client start → upstream connect → relay loop. */
 async function runSession(downstream: WebSocket, request: Request, env: Env): Promise<void> {
-  const workspaceId = env.DASHSCOPE_WORKSPACE_ID as string;
+  const workspaceId = env.DASHSCOPE_WORKSPACE_ID;
   const apiKey = env.DASHSCOPE_API_KEY_APAC as string;
   const continent = (request.cf as { continent?: string } | undefined)?.continent;
 
@@ -199,7 +208,12 @@ async function runSession(downstream: WebSocket, request: Request, env: Env): Pr
 
   // Upstream connect (Workers outbound WS = fetch with an Upgrade header; auth is a header, never the URL).
   const upstreamResp = await fetch(realtimeUpstreamUrl(workspaceId), {
-    headers: { Upgrade: 'websocket', Authorization: `Bearer ${apiKey}` },
+    headers: {
+      Upgrade: 'websocket',
+      Authorization: `Bearer ${apiKey}`,
+      // Scopes the session to a workspace on the legacy shared host; harmless on the per-workspace one.
+      ...(workspaceId ? { 'X-DashScope-WorkSpace': workspaceId } : {}),
+    },
   });
   const upstream = (upstreamResp as Response & { webSocket: WebSocket | null }).webSocket;
   if (!upstream) {

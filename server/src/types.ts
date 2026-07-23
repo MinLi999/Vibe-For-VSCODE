@@ -20,8 +20,10 @@ export interface Env {
   DASHSCOPE_API_KEY_APAC?: string;
   DASHSCOPE_API_KEY_US?: string;
   /**
-   * Model Studio workspace id for the realtime WebSocket endpoint (it is part of the
-   * hostname: wss://{id}.ap-southeast-1.maas.aliyuncs.com). Singapore only — the
+   * OPTIONAL Model Studio workspace id for the realtime WebSocket endpoint. When set, the
+   * upstream host becomes wss://{id}.ap-southeast-1.maas.aliyuncs.com (the per-workspace
+   * domain Alibaba recommends); when absent, the legacy shared intl domain is used and
+   * streaming still works with just DASHSCOPE_API_KEY_APAC. Singapore only — the
    * international realtime endpoint has no US region (docs/04-STREAMING.md).
    * `wrangler secret put DASHSCOPE_WORKSPACE_ID`.
    */
