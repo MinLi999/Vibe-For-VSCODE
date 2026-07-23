@@ -31,6 +31,12 @@ export interface DesktopConfig {
   /** Restore the previous clipboard text ~1s after pasting the transcription. */
   restoreClipboard: boolean;
   /**
+   * Experimental streaming transcription (pro tier): utterances transcribe while you speak
+   * and paste as they finalize. Needs an Electron runtime with a global WebSocket (Node >= 22);
+   * silently falls back to the batch path otherwise or on any stream failure.
+   */
+  streamingMode: boolean;
+  /**
    * Correction glossary fed to the rewrite stage. List the product names, tech terms and
    * camelCase identifiers you dictate that the ASR mis-hears or mis-cases (e.g. spoken
    * "use effect" is restored to "useEffect"). The rewrite prompt only fixes casing/spelling
@@ -84,6 +90,7 @@ export const DEFAULT_CONFIG: DesktopConfig = {
   chineseVariant: 'simplified-cn',
   dashscopeRegion: 'auto',
   restoreClipboard: true,
+  streamingMode: false,
   // Seeded from a scan of this codebase plus common dev proper nouns most prone to ASR
   // mis-hearing. Kept under the server's 40-entry cap. Users edit config.json to tune.
   vocabulary: [
