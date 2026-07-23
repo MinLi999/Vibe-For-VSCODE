@@ -2,6 +2,13 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-07-23(**流式零配置化 + 双端凭据管理 UI**;起因:用户问"新加坡区 id 我以前没给过吗"并要求 UI 里能维护 key/id):
+  ① **核实**:`wrangler secret list` 确认线上只有 `ANTHROPIC_API_KEY`(废弃)/`DASHSCOPE_API_KEY_APAC`/`DASHSCOPE_API_KEY_US` —— workspace id **确实从未提供过**,是 M1 新引入的需求。复查官方文档后发现旧共享域名 `dashscope-intl.aliyuncs.com` 仍可用、per-workspace 域名只是推荐,遂**把 workspace id 降级为可选**:`realtimeUpstreamUrl(undefined)` 回落共享域名 + 配了则附 `X-DashScope-WorkSpace` 头;503 判据从"缺 workspace id 或 key"改为"缺 key"。**结果:流式转写对用户零额外配置**,复用既有 APAC key。新增 2 例测试。
+  ② **扩展端凭据管理**(`vibefox.manageCredentials`):QuickPick 一屏显示 License Key + Groq/OpenAI/阿里云三把 provider key 的已设置状态(只显示状态不显示明文)、任选一项设置/清除(旧 setApiKey 只能改**当前** provider 的 key,这是能力补齐),外加 endpoint 跳转项与"服务端密钥不在客户端维护"的说明。
+  ③ **桌面端凭据菜单**:托盘新增「凭据与服务地址」子菜单(License Key 状态/设置/清除、服务地址显示与修改——AppleScript 输入框,留空恢复官方地址),`licenseKeyPresent` 启动异步探测后刷新菜单;顺带把流式开关做成托盘 checkbox(此前只能改 config.json);`askForText` 抽为通用输入框并做 AppleScript+shell 双重转义。
+  ④ **服务端 secret 维护**:`server/scripts/secrets.sh`(list/set/delete,内置每个 secret 的用途说明,值只经 wrangler 自身提示输入、脚本从不接触)——服务端密钥按红线 2 不进任何客户端 UI。
+  ⑤ **Electron 43 真实配置冒烟**:用户关掉 `/Applications/VibeFox.app` 后用真实 userData 启动验证通过(此前只在隔离目录验证过)。
+
 **阶段**:开源化完成并已推送 GitHub;Phase B 仅剩流式转写实现(设计已完成) (2026-07-23)。
 **健康度**:🟢 三端 typecheck+esbuild 全绿,vitest 26 例全过(server 14 + client 12),DoD 分层 grep 全绿;`main` 已推送(557f2e7 / 95d2bbd / 5da4cce + 本轮)。⚠️ 待办:用户真实录音端到端验证、间歇性空转写问题仍未关闭(见 docs/handoff.md §四)。
 - 2026-07-23(**流式转写 M2 扩展端接入 + M1 冒烟脚本**):

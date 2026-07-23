@@ -5,7 +5,7 @@
 ## 1. 上游 API 调研结论(qwen3-asr-flash-realtime)
 
 - **协议**:WebSocket,OpenAI Realtime 风格事件。握手 `Authorization: Bearer <DASHSCOPE_KEY>`,401/403 在握手期返回。
-- **端点**:`wss://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime`。⚠️ **国际版只有新加坡区**(北京区需中国实体,美国区无 realtime 端点)——与批量接口(SG+US 双区)不同。URL 里需要 **WorkspaceId**(按 secret 管理:`DASHSCOPE_WORKSPACE_ID`)。
+- **端点**:`wss://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime`。⚠️ **国际版只有新加坡区**(北京区需中国实体,美国区无 realtime 端点)——与批量接口(SG+US 双区)不同。**WorkspaceId 可选**(2026-07-23 复核官方文档:旧共享域名 `dashscope-intl.aliyuncs.com` 仍可用,per-workspace 域名只是"推荐"):配了 `DASHSCOPE_WORKSPACE_ID` 就走 per-workspace 主机并附 `X-DashScope-WorkSpace` 头,没配则走共享域名——**流式因此零额外配置,复用既有 `DASHSCOPE_API_KEY_APAC` 即可**,503 只在缺 API key 时返回。
 - **音频**:PCM16 16kHz 单声道(`input_audio_format:"pcm"`, `sample_rate:16000`),推荐 ~3200 字节/包(≈0.1s)。**我们的 VAD 采集路径本来就是 s16le 16k PCM 流,零转码直接可发**。
 - **两种断句模式**:`server_vad`(服务端断句,`silence_duration_ms` 默认 800/会话场景推荐 400)或 `turn_detection:null` 手动 commit(**累计音频 ≤60s,不适合长口述**)→ 选 server_vad。
 - **事件流**:上行 `session.update` / `input_audio_buffer.append`(base64 PCM)/ `session.finish`;下行 `...transcription.text`(增量)/ `...transcription.completed`(整句定稿)/ `session.finished`。
