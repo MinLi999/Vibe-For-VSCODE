@@ -21,8 +21,8 @@ grep -rn "from ['\"]\.\./\(models\|viewer\|controllers\)" client/src/services/
 ```bash
 # 密钥不进源码/配置(应零输出;placeholder 与 SecretStorage API 除外)
 grep -rn "LICENSE_KEY\s*=\|Bearer [A-Za-z0-9]\{16,\}" client/src server/src
-# 语言锁与上限的权威数值未被偷改(源码用单引号,故不锚定引号类型)
-grep -n "= 'zh'" server/src/transcribe.ts && grep -n "maxRecordSeconds" client/package.json && grep -n "MAX_AUDIO_BASE64_QUALITY = 8" server/src/transcribe.ts
+# 语言策略与上限的权威数值未被偷改:Whisper 兜底仍锁 zh(auto→zh 映射在),上限未动
+grep -n "'auto' ? 'zh'" server/src/transcribe.ts && grep -n "maxRecordSeconds" client/package.json && grep -n "MAX_AUDIO_BASE64_QUALITY = 8" server/src/transcribe.ts
 # v2 安全红线:客户端 prompt/model 不进服务端调用(匹配属性访问,注释不算;应零输出)
 grep -rn "\['llmPrompt'\]\|\.llmPrompt\|\['llmModel'\]\|\.llmModel" server/src/ && echo "❌ 客户端 prompt/model 泄入服务端" || echo "✅ prompts server-owned"
 ```
