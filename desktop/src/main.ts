@@ -18,7 +18,7 @@ import { frontmostAppCategory } from './frontmostApp';
 import { AudioRecorderService, FfmpegNotFoundError } from '../../client/src/services/AudioRecorderService';
 import { ApiError, CloudflareApiService, streamingSupported } from '../../client/src/services/CloudflareApiService';
 import type { AppCategory, ChineseVariant, RegionPreference, RewriteMode, TranscriptionStream } from '../../client/src/services/CloudflareApiService';
-import { DesktopConfig, configFilePath, loadConfig, saveConfig } from './config';
+import { DesktopConfig, OFFICIAL_HOSTED_ENDPOINT, configFilePath, loadConfig, saveConfig } from './config';
 import { clearLicenseKey, getLicenseKey, setLicenseKey } from './licenseStore';
 import { pasteIntoFrontmostApp } from './paste';
 
@@ -59,6 +59,8 @@ class DesktopApp {
     resolveDone: () => void;
   } | null = null;
   private streamingUnsupportedNotified = false;
+  /** Cached so the tray menu (built synchronously) can show the key's state without a keychain read. */
+  private licenseKeyPresent = false;
 
   constructor(private readonly userDataDir: string) {
     this.config = loadConfig(userDataDir);
@@ -101,6 +103,11 @@ class DesktopApp {
     this.tray.setIgnoreDoubleClickEvents(true);
     this.setTrayTitle('');
     this.rebuildMenu();
+    // Keychain read is async; refresh the menu once the key's state is known.
+    void getLicenseKey(this.userDataDir).then((key) => {
+      this.licenseKeyPresent = key !== null;
+      this.rebuildMenu();
+    });
     this.registerHotkey();
     if (!this.accessibilityTrusted()) {
       // Nudge once so the user knows where to grant the permission that makes auto-paste work.
@@ -224,9 +231,48 @@ class DesktopApp {
           }),
         ),
       },
+      {
+        label: '流式转写(实验性)',
+        type: 'checkbox',
+        checked: this.config.streamingMode,
+        enabled: this.phase === 'idle',
+        toolTip: '边说边转写,整句定稿即粘贴。需要质量档 License Key;任何失败自动回落普通模式。',
+        click: () => {
+          this.config.streamingMode = !this.config.streamingMode;
+          saveConfig(this.userDataDir, this.config);
+          this.rebuildMenu();
+        },
+      },
       { type: 'separator' },
-      { label: '设置 License Key…', click: () => void this.promptLicenseKey() },
-      { label: '清除 License Key', click: () => void clearLicenseKey(this.userDataDir) },
+      {
+        label: '凭据与服务地址',
+        submenu: [
+          {
+            label: `License Key:${this.licenseKeyPresent ? '已设置 ✓' : '未设置'}`,
+            enabled: false,
+          },
+          { label: this.licenseKeyPresent ? '重新设置 License Key…' : '设置 License Key…', click: () => void this.promptLicenseKey() },
+          {
+            label: '清除 License Key',
+            enabled: this.licenseKeyPresent,
+            click: () => {
+              void clearLicenseKey(this.userDataDir).then(() => {
+                this.licenseKeyPresent = false;
+                this.rebuildMenu();
+              });
+            },
+          },
+          { type: 'separator' },
+          { label: `服务地址:${this.config.endpoint}`, enabled: false },
+          { label: '修改服务地址…', click: () => void this.promptEndpoint() },
+          { type: 'separator' },
+          {
+            label: '服务端 DashScope 密钥在 Worker 端维护',
+            toolTip: '转写引擎密钥与 workspace id 只存在于你的 Cloudflare Worker(wrangler secret),客户端不持有、也无法读取。',
+            enabled: false,
+          },
+        ],
+      },
       ...(process.platform === 'darwin'
         ? [{ label: this.accessibilityTrusted() ? '辅助功能:已授权 ✓' : '授予辅助功能权限(自动粘贴需要)…', click: () => this.requestAccessibility() }]
         : []),
@@ -637,17 +683,43 @@ class DesktopApp {
       this.notify('VibeFox', `请将 License Key 写入 ${this.userDataDir}/license.key 文件。`);
       return;
     }
+    const key = await this.askForText('输入 VibeFox License Key', '', true);
+    if (key !== null && key.length > 0) {
+      await setLicenseKey(this.userDataDir, key);
+      this.licenseKeyPresent = true;
+      this.notify('VibeFox', 'License Key 已保存到系统钥匙串。');
+      this.rebuildMenu();
+    }
+  }
+
+  /** Native text prompt (macOS). Returns null when the user cancels. */
+  private askForText(promptText: string, defaultValue: string, hidden = false): Promise<string | null> {
+    // Escape for both the AppleScript string literal and the surrounding single-quoted shell arg.
+    const esc = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, `'\\''`);
     const script =
-      'text returned of (display dialog "输入 VibeFox License Key" default answer "" with hidden answer with title "VibeFox")';
-    const key = await new Promise<string | null>((resolve) => {
+      `text returned of (display dialog "${esc(promptText)}" default answer "${esc(defaultValue)}"` +
+      `${hidden ? ' with hidden answer' : ''} with title "VibeFox")`;
+    return new Promise((resolve) => {
       exec(`osascript -e '${script}'`, (error, stdout) => {
         resolve(error ? null : stdout.trim()); // Non-zero exit = user pressed Cancel.
       });
     });
-    if (key !== null && key.length > 0) {
-      await setLicenseKey(this.userDataDir, key);
-      this.notify('VibeFox', 'License Key 已保存到系统钥匙串。');
+  }
+
+  /** Worker base URL lives in config.json; editable here so users never have to open a text editor. */
+  private async promptEndpoint(): Promise<void> {
+    if (process.platform !== 'darwin') {
+      void shell.openPath(configFilePath(this.userDataDir));
+      return;
     }
+    const value = await this.askForText('Worker 服务地址(留空恢复官方托管地址)', this.config.endpoint);
+    if (value === null) {
+      return;
+    }
+    this.config.endpoint = value.trim().length > 0 ? value.trim().replace(/\/+$/, '') : OFFICIAL_HOSTED_ENDPOINT;
+    saveConfig(this.userDataDir, this.config);
+    this.notify('VibeFox', `服务地址已更新:${this.config.endpoint}`);
+    this.rebuildMenu();
   }
 }
 

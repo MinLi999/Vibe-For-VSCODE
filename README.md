@@ -79,7 +79,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for layering rules and PR guidelines. Int
 
 - Intermittent "no speech detected" on audio that clearly contains speech — under investigation, diagnostics built in (`vibefox.diagnosticSaveAudio`). See [docs/handoff.md](docs/handoff.md) §四.
 - Windows/Linux capture paths (dshow/pulse) are implemented but untested — reports and PRs welcome (`help wanted`).
-- Streaming mode is experimental and Singapore-region only (the international realtime endpoint has no US region), so expect extra round-trip latency from the Americas. It needs a host with a global WebSocket (Node ≥ 22) and a self-hosted backend must set `DASHSCOPE_WORKSPACE_ID`; otherwise clients stay on the batch path.
+- Streaming mode is experimental and Singapore-region only (the international realtime endpoint has no US region), so expect extra round-trip latency from the Americas. It needs a host with a global WebSocket (Node ≥ 22); otherwise clients stay on the batch path.
 
 ## License
 

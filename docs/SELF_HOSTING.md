@@ -24,14 +24,13 @@ npx wrangler kv namespace create AUTH_KEYS
 npx wrangler secret put DASHSCOPE_API_KEY_APAC
 npx wrangler secret put DASHSCOPE_API_KEY_US
 
-# 3. (Streaming only) the Model Studio workspace id, part of the realtime WS hostname
-npx wrangler secret put DASHSCOPE_WORKSPACE_ID
-
-# 4. Deploy
+# 3. Deploy
 npx wrangler deploy
 ```
 
-Streaming (`/api/realtime`) is Singapore-only — the international realtime endpoint has no US region. Without `DASHSCOPE_WORKSPACE_ID` the endpoint returns 503 and clients fall back to the batch path automatically; everything else is unaffected. To verify a deployment end to end:
+`./scripts/secrets.sh` (list / set / delete) wraps these commands with a description of every secret name, if you'd rather not memorize them.
+
+Streaming (`/api/realtime`) needs no extra credentials — it reuses `DASHSCOPE_API_KEY_APAC`. It is Singapore-only, because the international realtime endpoint has no US region. Optionally set `DASHSCOPE_WORKSPACE_ID` (your Model Studio workspace id) to use the per-workspace host Alibaba recommends for stability; without it the shared international host is used. To verify a deployment end to end:
 
 ```bash
 ffmpeg -f avfoundation -i :default -t 5 -ac 1 -ar 16000 -f s16le sample.pcm
