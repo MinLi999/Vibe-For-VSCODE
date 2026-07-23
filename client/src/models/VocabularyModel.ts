@@ -78,12 +78,14 @@ export class VocabularyModel {
 
   /**
    * Builds the two-tier context payload:
-   * - keywords (≤40, ranked): active-doc top 20 → workspace top 15 → filename stems to fill.
+   * - keywords (≤40, ranked): personal dictionary → active-doc top 20 → workspace top 15 →
+   *   filename stems to fill. The user-maintained dictionary outranks everything mined
+   *   automatically — the user put those words there precisely because ASR keeps missing them.
    *   Consumed by the Whisper-path initial_prompt (800-byte budget applied at send time).
    * - projectContext (≤2000 chars): structured free text with original-casing identifiers.
    *   Consumed by the quality-tier ASR's context-enhancement channel (no tight budget).
    */
-  buildPayload(input: EditorContextInput, workspaceKeywords: string[] = []): ContextPayload {
+  buildPayload(input: EditorContextInput, workspaceKeywords: string[] = [], personalDictionary: string[] = []): ContextPayload {
     this.pruneCache(input);
 
     const activeDoc = input.activeDocumentKey
@@ -104,6 +106,9 @@ export class VocabularyModel {
         keywords.push(token);
       }
     };
+    for (const t of personalDictionary) {
+      addToken(t);
+    }
     for (const t of activeTokens.slice(0, ACTIVE_DOC_KEYWORD_SLOTS)) {
       addToken(t);
     }

@@ -6,11 +6,13 @@
   "publisher": "elvisli",
   "icon": "icon.png",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "AGPL-3.0-only",
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "main": "./dist/extension.js",
   "activationEvents": [
     "onStartupFinished"
@@ -48,6 +50,10 @@
       {
         "command": "vibefox.diagnoseAudio",
         "title": "VibeFox: Diagnose Audio Input / 诊断麦克风输入"
+      },
+      {
+        "command": "vibefox.showHistory",
+        "title": "VibeFox: Transcription History / 转写历史"
       }
     ],
     "keybindings": [
@@ -66,7 +72,13 @@
       "properties": {
         "vibefox.apiProvider": {
           "type": "string",
-          "enum": ["cloudflare", "groq", "openai", "aliyun", "custom"],
+          "enum": [
+            "cloudflare",
+            "groq",
+            "openai",
+            "aliyun",
+            "custom"
+          ],
           "default": "cloudflare",
           "enumDescriptions": [
             "Use Cloudflare Workers AI (default free/hosted backend)",
@@ -89,9 +101,9 @@
         },
         "vibefox.language": {
           "type": "string",
-          "default": "zh",
-          "pattern": "^[a-z]{2}$",
-          "markdownDescription": "ISO-639-1 language passed explicitly to Whisper (bypasses auto-detection latency). Default `zh`."
+          "default": "auto",
+          "pattern": "^(auto|[a-z]{2})$",
+          "markdownDescription": "转写语言。默认 `auto`:质量档 Qwen3-ASR 自动检测(官方对中英混杂音频的推荐设置,显式锁 `zh` 会把英文词往中文发音上偏);Whisper 兜底路径仍显式锁 `zh` 绕过其检测延迟。也可设 ISO-639-1 两字母码(如 `zh`/`en`)强制单一语言。"
         },
         "vibefox.maxRecordSeconds": {
           "type": "number",
@@ -102,7 +114,13 @@
         },
         "vibefox.insertTarget": {
           "type": "string",
-          "enum": ["auto", "editor", "terminal", "clipboard", "chat"],
+          "enum": [
+            "auto",
+            "editor",
+            "terminal",
+            "clipboard",
+            "chat"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "Active editor cursor → active terminal → agent chat input → clipboard fallback",
@@ -127,6 +145,14 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Extract identifiers from the active editor + recent filenames and send them as a vocabulary hint (Whisper `initial_prompt`) so code terms transcribe accurately."
+        },
+        "vibefox.personalDictionary": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "个人词典:ASR 经常听错的人名/产品名/团队术语(如 `Anthropic`、`wrangler`)。这些词以最高优先级进入词表偏置与改写校正,即使 `#vibefox.contextHint#` 关闭也生效。服务端词表上限 40,词典过长会挤占自动挖掘的项目词。/ Personal dictionary: names and jargon the ASR keeps mishearing. Highest-priority bias slots; works even with `#vibefox.contextHint#` off."
         },
         "vibefox.vadEnabled": {
           "type": "boolean",
@@ -161,7 +187,11 @@
         },
         "vibefox.rewriteMode": {
           "type": "string",
-          "enum": ["off", "clean", "rewrite"],
+          "enum": [
+            "off",
+            "clean",
+            "rewrite"
+          ],
           "default": "clean",
           "enumDescriptions": [
             "原样转写:不做任何后处理",
@@ -172,7 +202,12 @@
         },
         "vibefox.chineseVariant": {
           "type": "string",
-          "enum": ["simplified-cn", "simplified-sg-my", "traditional-tw", "traditional-hk-mo"],
+          "enum": [
+            "simplified-cn",
+            "simplified-sg-my",
+            "traditional-tw",
+            "traditional-hk-mo"
+          ],
           "default": "simplified-cn",
           "enumDescriptions": [
             "简体中文 · 中国大陆词汇与文法",
@@ -184,7 +219,11 @@
         },
         "vibefox.dashscopeRegion": {
           "type": "string",
-          "enum": ["auto", "apac", "us"],
+          "enum": [
+            "auto",
+            "apac",
+            "us"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "自动:按你的网络所在大洲就近路由(亚太→新加坡区,其余→美国区)",
@@ -200,7 +239,13 @@
         },
         "vibefox.llmCorrectionProvider": {
           "type": "string",
-          "enum": ["auto", "groq", "openai", "aliyun", "custom"],
+          "enum": [
+            "auto",
+            "groq",
+            "openai",
+            "aliyun",
+            "custom"
+          ],
           "default": "auto",
           "markdownDeprecationMessage": "Legacy:仅对非 Cloudflare provider 的客户端改写链路生效;Cloudflare 链路的改写由服务端执行,此设置无效。",
           "markdownDescription": "The LLM provider for client-side rewrite on non-Cloudflare providers. If auto, maps to the active transcription provider."
@@ -235,13 +280,15 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "vscode:prepublish": "npm run compile -- --production",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.24.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.10"
   }
 }

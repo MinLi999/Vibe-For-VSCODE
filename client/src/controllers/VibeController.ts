@@ -9,6 +9,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { AudioState } from '../models/AudioState';
+import { dedupeAgainstSession } from '../models/TranscriptDedupe';
+import { TranscriptHistory } from '../models/TranscriptHistory';
 import { VocabularyModel, type ContextPayload } from '../models/VocabularyModel';
 import { StatusBarViewer, REWRITE_MODE_LABELS } from '../viewer/StatusBarViewer';
 import { TextInserter, TextInsertionError, type InsertTarget, type InsertOutcome } from '../viewer/TextInserter';
@@ -20,6 +22,7 @@ import { SystemPasteService } from '../services/SystemPasteService';
 import { KeybindingLookupService } from '../services/KeybindingLookupService';
 
 const SECRET_KEY = 'vibefox.licenseKey';
+const HISTORY_STORAGE_KEY = 'vibefox.transcriptHistory';
 
 interface VibeConfig {
   endpoint: string;
@@ -29,6 +32,8 @@ interface VibeConfig {
   ffmpegPath: string;
   audioDevice: string;
   contextHint: boolean;
+  /** User-maintained vocabulary (names, jargon, product nouns) — top-priority ASR bias slots. */
+  personalDictionary: string[];
   vadEnabled: boolean;
   vadSilenceMs: number;
   vadMinDurationMs: number;
@@ -161,6 +166,9 @@ export class VibeController implements vscode.Disposable {
   private readonly sessionErrors: string[] = [];
   /** Gates the clipboard/paste hint to at most once per recording session (not per VAD segment). */
   private pasteHintShownThisSession = false;
+  /** Local-only transcription history (persisted in globalState; never leaves the machine). */
+  private history = new TranscriptHistory();
+  private historyStorage: vscode.Memento | null = null;
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -193,12 +201,15 @@ export class VibeController implements vscode.Disposable {
       vscode.commands.registerCommand('vibefox.clearApiKey', () => this.clearApiKey()),
       vscode.commands.registerCommand('vibefox.diagnoseAudio', () => this.diagnoseAudio()),
       vscode.commands.registerCommand('vibefox.selectRewriteMode', () => this.selectRewriteMode()),
+      vscode.commands.registerCommand('vibefox.showHistory', () => this.showHistory()),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('vibefox.rewriteMode')) {
           this.statusBar.setRewriteMode(this.readConfig().rewriteMode);
         }
       }),
     );
+    this.historyStorage = context.globalState;
+    this.history = new TranscriptHistory(context.globalState.get(HISTORY_STORAGE_KEY));
     void this.migrateLegacySettings(context);
     this.statusBar.setRewriteMode(this.readConfig().rewriteMode);
   }
@@ -391,8 +402,8 @@ export class VibeController implements vscode.Disposable {
     // re-scanning the workspace and re-reading config on every silence split).
     this.sessionConfig = config;
     this.sessionContext = config.contextHint
-      ? this.buildSessionContext()
-      : Promise.resolve({ keywords: [], projectContext: '' });
+      ? this.buildSessionContext(config)
+      : Promise.resolve({ keywords: config.personalDictionary, projectContext: '' });
     this.statusBar.showRecording(() => this.audioState.elapsedSeconds, config.maxRecordSeconds, () => this.recorder.inputLevel);
 
     try {
@@ -510,13 +521,14 @@ export class VibeController implements vscode.Disposable {
 
       const context = await this.currentSessionContext(config);
       const result = await this.processUtterance(config, audioBase64, context);
-      const finalText = this.dedupeAgainstSession(result.finalText);
+      const finalText = dedupeAgainstSession(this.sessionTranscript, result.finalText);
 
       if (finalText.trim().length > 0) {
         this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
         this.sessionChars += finalText.length;
         this.sessionProcessingMs += result.totalMs;
         this.sessionEngineLabel = result.engineLabel;
+        this.recordHistory(finalText);
         const outcome = await this.insertWithPaste(finalText, config.insertTarget);
         this.audioState.completeWithText(finalText);
         this.finishSession(config);
@@ -557,35 +569,6 @@ export class VibeController implements vscode.Disposable {
     } finally {
       clearTimeout(slowHint);
     }
-  }
-
-  /**
-   * Trims text that echoes what this session already inserted. Echoes come from two vectors:
-   * ASR repeating conditioning text on near-silent audio, and rewrite LLMs ignoring the
-   * "禁止重复输出" instruction. Deterministic last line of defense regardless of the source.
-   */
-  private dedupeAgainstSession(text: string): string {
-    const prev = this.sessionTranscript;
-    const t = text.trim();
-    if (prev.length === 0 || t.length === 0) {
-      return t;
-    }
-    const normalize = (s: string): string => s.replace(/[\s。.,，、;；:：!！?？…~〜'"'"()（）\-]/g, '');
-    const nPrev = normalize(prev);
-    const nText = normalize(t);
-    // The whole utterance is a re-emission of what was already inserted.
-    if (nText.length > 0 && nPrev.endsWith(nText)) {
-      return '';
-    }
-    // Overlap trim: longest suffix of the inserted transcript that prefixes the new text
-    // (≥8 chars so ordinary short word repeats aren't mistaken for echoes).
-    const max = Math.min(prev.length, t.length);
-    for (let k = max; k >= 8; k--) {
-      if (prev.endsWith(t.slice(0, k))) {
-        return t.slice(k).replace(/^[\s。.,，、;；:：!！?？…]+/, '');
-      }
-    }
-    return t;
   }
 
   /** Session-end feedback: one consolidated stats flash + at most one error summary toast. */
@@ -678,7 +661,9 @@ export class VibeController implements vscode.Disposable {
     if (this.sessionContext !== null) {
       return this.sessionContext;
     }
-    return config.contextHint ? this.buildSessionContext() : { keywords: [], projectContext: '' };
+    return config.contextHint
+      ? this.buildSessionContext(config)
+      : { keywords: config.personalDictionary, projectContext: '' };
   }
 
   private async handleVadSegment(segmentMp3: Buffer, segmentPeak: number): Promise<void> {
@@ -691,7 +676,7 @@ export class VibeController implements vscode.Disposable {
     try {
       const context = await this.currentSessionContext(config);
       const result = await this.processUtterance(config, segmentBase64, context, Math.round(segmentPeak));
-      const finalText = this.dedupeAgainstSession(result.finalText);
+      const finalText = dedupeAgainstSession(this.sessionTranscript, result.finalText);
 
       if (finalText.trim().length > 0) {
         this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
@@ -699,6 +684,7 @@ export class VibeController implements vscode.Disposable {
         this.sessionChars += finalText.length;
         this.sessionProcessingMs += result.totalMs;
         this.sessionEngineLabel = result.engineLabel;
+        this.recordHistory(finalText);
         // No per-segment toast — progress lives in the status bar; one consolidated summary at session end.
         const outcome = await this.insertWithPaste(finalText, config.insertTarget);
         this.maybeShowPasteHint(outcome);
@@ -880,11 +866,52 @@ export class VibeController implements vscode.Disposable {
     }
   }
 
+  // ── Local transcription history ───────────────────────────
+
+  /** Recorded BEFORE insertion so text survives even when the paste target rejects it. */
+  private recordHistory(text: string): void {
+    this.history.add(text);
+    void this.historyStorage?.update(HISTORY_STORAGE_KEY, this.history.toJSON());
+  }
+
+  /** QuickPick over the local history: pick → clipboard. History never leaves this machine. */
+  private async showHistory(): Promise<void> {
+    const entries = this.history.list();
+    if (entries.length === 0) {
+      void vscode.window.showInformationMessage('VibeFox:暂无转写历史。');
+      return;
+    }
+    const CLEAR_LABEL = '$(trash) 清空历史';
+    type HistoryItem = vscode.QuickPickItem & { text: string };
+    const items: HistoryItem[] = entries.map((e) => ({
+      label: e.text.length > 60 ? `${e.text.slice(0, 60)}…` : e.text,
+      description: new Date(e.at).toLocaleString(),
+      detail: e.text.length > 60 ? e.text : undefined,
+      text: e.text,
+    }));
+    items.push({ label: CLEAR_LABEL, text: '' });
+    const pick = await vscode.window.showQuickPick(items, {
+      placeHolder: '选择一条转写记录复制到剪贴板(历史仅保存在本机)',
+      matchOnDetail: true,
+    });
+    if (pick === undefined) {
+      return;
+    }
+    if (pick.label === CLEAR_LABEL) {
+      this.history.clear();
+      void this.historyStorage?.update(HISTORY_STORAGE_KEY, this.history.toJSON());
+      void vscode.window.showInformationMessage('VibeFox:转写历史已清空。');
+      return;
+    }
+    await vscode.env.clipboard.writeText(pick.text);
+    void vscode.window.showInformationMessage('VibeFox:已复制到剪贴板。');
+  }
+
   /** Viewer takes a text snapshot → Model builds the two-tier payload. Called ONCE per recording session. */
-  private async buildSessionContext(): Promise<ContextPayload> {
+  private async buildSessionContext(config: VibeConfig): Promise<ContextPayload> {
     const snapshot = await this.editorContext.snapshot();
     const workspaceKeywords = this.workspaceContext.getWorkspaceKeywords();
-    return this.vocabulary.buildPayload(snapshot, workspaceKeywords);
+    return this.vocabulary.buildPayload(snapshot, workspaceKeywords, config.personalDictionary);
   }
 
   // ── Auth lifecycle ────────────────────────────────────────
@@ -1031,12 +1058,15 @@ export class VibeController implements vscode.Disposable {
 
     return {
       endpoint: getWithFallback<string>('endpoint', '').trim(),
-      language: getWithFallback<string>('language', 'zh'),
+      language: getWithFallback<string>('language', 'auto'),
       maxRecordSeconds: getWithFallback<number>('maxRecordSeconds', 25),
       insertTarget: getWithFallback<InsertTarget>('insertTarget', 'auto'),
       ffmpegPath: getWithFallback<string>('ffmpegPath', '').trim(),
       audioDevice: getWithFallback<string>('audioDevice', '').trim(),
       contextHint: getWithFallback<boolean>('contextHint', true),
+      personalDictionary: getWithFallback<string[]>('personalDictionary', [])
+        .map((w) => w.trim())
+        .filter((w) => w.length > 0),
       vadEnabled: getWithFallback<boolean>('vadEnabled', true),
       vadSilenceMs: getWithFallback<number>('vadSilenceMs', 1200),
       vadMinDurationMs: getWithFallback<number>('vadMinDurationMs', 3000),

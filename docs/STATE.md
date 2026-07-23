@@ -2,8 +2,27 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:Phase 4 桌面端伴侣应用(Claude App 系统级语音输入)MVP 落地 (2026-07-18)。
-**健康度**:🟢 desktop/ typecheck+esbuild 全绿,Electron 冒烟启动 6s 存活无报错,config.json 自动生成验证通过。⚠️ 待办:用户真实录音端到端验证(麦克风/辅助功能授权)、间歇性空转写问题仍未关闭(见 handoff.md §四)。
+**阶段**:开源化 Phase A 完成 + Phase B 两项落地/一项设计完成 (2026-07-23);路线图见 01-PRD §4。
+**健康度**:🟢 三端 typecheck+esbuild 全绿,vitest 21 例全过(server 9 + client 12),DoD 分层 grep 全绿。⚠️ 待办:用户真实录音端到端验证、间歇性空转写问题仍未关闭(见 docs/handoff.md §四)。
+- 2026-07-23(**Phase B 推进:个人词典 + 本地转写历史落地,流式转写设计完成**):
+  ① **个人词典(B②)**:`vibefox.personalDictionary`(数组设置)→ `VocabularyModel.buildPayload` 第三参,词典词以**最高优先级**进 keywords(排在活动文档 top20 之前,大小写按词典拼写,不区分大小写去重);`contextHint:false` 时词典仍生效(两处 sessionContext 构造点都改)。桌面端 config.vocabulary 既有等价物,核对语义一致无需改。vitest 3 例(优先级/大小写去重/空词典)。
+  ② **本地转写历史(B③)**:新共享纯模型 `client/src/models/TranscriptHistory.ts`(cap 50,持久化数据消毒,vitest 4 例含损坏数据用例)。扩展端:globalState 持久化,新命令 `vibefox.showHistory` QuickPick(复制到剪贴板/清空);桌面端:history.json 持久化,托盘「转写历史(仅本机)」子菜单最近 10 条点击复制。**记录时机在插入之前**(粘贴目标拒收文本也不丢);client 两处插入点(整段+VAD 段)与 desktop 唯一漏斗 processSegment 均已接。隐私承诺「历史绝不上云」写入 PRD 模块 I。
+  ③ **流式转写设计(B①,docs/04-STREAMING.md)**:调研 qwen3-asr-flash-realtime 官方文档完成。关键结论:**国际版 realtime 只有新加坡区**(美国区无端点,dashscopeRegion 对流式无效);协议 = OpenAI Realtime 风格 WS 事件(session.update/append/completed);音频要求 PCM16 16k 单声道——**现有 VAD 采集路径零转码可用**;手动 commit 模式限累计 60s → 必须用 server_vad;**官方未记载词表偏置** → 流式档标识符校正只能靠改写阶段,风险已写入设计文档。架构:Worker `/api/realtime` WS 代理(密钥红线不变,新增 secret DASHSCOPE_WORKSPACE_ID),每句 completed → qwen-plus 改写 → 下发定稿;partial 只进状态栏预览;失败自动降级现有 HTTP 批量路径。M1-M4 里程碑与三条风险已列。
+  PRD 已同步(模块 B 个人词典、新模块 I 历史、§4 Phase B 状态);DoD 分层 grep + 三端构建 + 21 例测试全绿。
+- 2026-07-23(**开源化拍板并落地 Phase A**;起因:用户决定对标 Typeless 做开源软件,竞品调研结论 = 功能管线同构、差距在外围体验/平台覆盖/开源就绪度,开源差异化打 Typeless 弱项:无 BYOK、无 MCP、云强依赖、闭源):
+  ① **决策**:全仓开源(client/server/desktop),license = **AGPL-3.0-only**;商业模式 open core(代码可自托管/BYOK,官方托管 Worker + key 发放为付费便利服务)。完整路线图(Phase A 就绪/B 体验追平/C 平台/D 护城河)写入 01-PRD §4;CLAUDE.md 红线 5 由「闭源」改写为「开源」,外部文档改英文、内部文档仍中文。
+  ② **仓库清洗**:git 全历史密钥扫描确认干净(仅 KV namespace id,非密钥);删除 1.md(测试转写残留);handoff.md 移入 docs/;`desktop/release/` 与 `.DS_Store` 本就未被追踪。
+  ③ **License 落地**:根目录 LICENSE(AGPL-3.0 官方全文),三包 package.json `license: "AGPL-3.0-only"`,LICENSE 副本复制进 client/(vsce 打包需要)与 desktop/。
+  ④ **`dedupeAgainstSession` 抽为共享纯函数**:此前 VibeController 私有方法与 desktop/main.ts 各持一份逐字节相同的副本(hexdump 实证),现统一为 `client/src/models/TranscriptDedupe.ts`(纯函数,零 vscode 依赖,符合 M 层红线),两端改为 import,双副本删除。
+  ⑤ **回归测试固化(vitest)**:server `nonspeech.test.ts` 9 例(isNonSpeechTranscript 标点/括号旁白/音频旁白/字幕垃圾正反例 + isContextEcho 词表复读/真实口述/短句豁免/空词表)、client `TranscriptDedupe.test.ts` 5 例(整段回声/≥8 字符重叠裁剪/短重复保留/新文本保留)。此前这些用例只在当时的临时验证里跑过,没有回归保护。两包新增 vitest devDependency + `npm test`。
+  ⑥ **CI**:`.github/workflows/ci.yml` 三 job(client typecheck+compile+test / server typecheck+test / desktop typecheck+compile,desktop job 先装 client 依赖因直接 import 其源码,`ELECTRON_SKIP_BINARY_DOWNLOAD=1`)。
+  ⑦ **开源文档套件(英文)**:根 README.md(卖点/双前端矩阵/快速上手/架构/已知问题)、docs/SELF_HOSTING.md(wrangler 部署/双区 secret/KV 发 key/客户端指回自有 endpoint/纯 BYOK 免服务端路径)、CONTRIBUTING.md(分层红线/PR 前检查/good first issues)、issue 模板两份(bug 表单含「勿贴密钥」提醒)。
+  ⑧ **端点去个人化**:desktop/config.ts 硬编码默认端点提为 `OFFICIAL_HOSTED_ENDPOINT` 常量并注明自托管覆盖方法(client 端 `vibefox.endpoint` 本就默认空 + 预检引导,无需改)。
+  **未做(有意)**:VAD 采样对齐 fuzz 未固化为测试(逻辑在 AudioRecorderService 私有方法内,待重构再补);isNonSpeechTranscript 的 client 副本与 server 需保持同步的问题未解(两包无共享依赖机制,候选方案 = 提出 shared 包或构建期复制,列入 Phase B 顺带项);commit 未做(纪律:未经要求不提交)。
+- 2026-07-19(**中英混杂英文识别错 —— 对标 Typeless 的精度两连改**;起因:用户反馈双端英文常识别错,要求逼近 Typeless/微信输入法。核实 Typeless 架构 = 云端 ASR + LLM 精修,与本产品同构,差距在参数细节):
+  ① **语言锁 `zh` 解除(主因修复)**:复核阿里云 Qwen-ASR 官方文档,原话「若音频语种不确定,或包含多种语种(例如中英日韩混合),请勿指定该参数」——此前硬规则锁 `zh` 恰好把英文词往中文发音上硬掰,关掉了 Qwen3-ASR 的 code-switch 强项。改法:三端默认 `language:'auto'`(client package.json 默认值+pattern、VibeController fallback、desktop config 默认+存量 `'zh'` 自动迁移,迁移无损——见下);服务端 `LANGUAGE_PATTERN` 收 `auto`,Qwen 路径 `auto`→不传参数(自动检测),**Whisper 兜底路径 `auto`→仍显式映射 `'zh'`**(其检测延迟/误检理由不变,故迁移对免费档零影响);缺省字段保持历史默认 `zh`(v1 兼容)。客户端直连 provider 路径同步:Groq/OpenAI `auto`→省略 language 字段(Whisper API 自检),aliyun paraformer 无 auto 概念保持 `zh` hint。CLAUDE.md 硬规则 3 已改写,03-DOD 的语言锁 grep 改为检查 `'auto' ? 'zh'` 映射存在。
+  ② **Qwen3-ASR context 词表偏置重新启用(带复读 guard)**:2026-07-12 移除该机制时的判断「官方文档未记载」已过时——现行官方 API 参考明确记载同步接口"定制化识别"(messages 首位 system message 携带背景文本/实体词表,≤1 万 token,但不支持指令式自由文本;当年泄露事故正是塞了 free-form 段落)。重启用方案:只发 `keywords.join(', ')` 纯实体列表(≤40 词),projectContext 仍只进改写阶段;新增 `isContextEcho`(nonspeech.ts,归一化剔除词表后残余 <20% 且长度 ≥12 判复读,8 组正反用例含真实口述句全过)对每个 Qwen 结果检测,命中按 degenerate 降级 Whisper(fallback 码 `dashscope_context_echo`),复用既有降级链兜底。
+  三端 typecheck+esbuild 全绿,DoD 分层 grep 全绿;PRD(卖点/模块 B,顺带修正模块 B 遗留的"Haiku 改写"过期表述)/02-STANDARDS(§3 引擎路由+context 机制)/CLAUDE.md/03-DOD 四文档已同步。**待用户实测**:真实中英混杂口述 A/B(重点听英文词是否不再音译),并观察 `dashscope_context_echo` 是否出现在 fallback 遥测。**后续已排期**:速度大招 = `qwen3-asr-flash-realtime` WebSocket 流式(Worker WS 代理,PCM16 流,松手即出结果),单独立项。
 - 2026-07-18(**用户在 M3 MacBook Air 上实测的三个插件 bug,全部修复**;旧测试机为 2017 Intel MBP):
   ① **bug 1a 转写文字粘到终端而非 Claude 聊天框**:根因是 `TextInserter` 的 `auto` 用 `vscode.window.activeTerminal`/`activeTextEditor` 判断目标,而这两个返回的是「最近活动过的」而非「当前键盘焦点」——焦点在 Claude Code webview 时 VS Code 不对第三方扩展暴露,只要面板有终端就被判成终端目标。修复(用户选定「聊天框优先」):`auto` 新增 `agentChatAvailable()` 探测(已注册的 claude-vscode.focus 等 agent 聊天命令,或 Copilot Chat 扩展存在),命中即优先走 `intoChat`(webview 聚焦 + 系统 ⌘V),编辑器/终端降为后备;`CHAT_FOCUS_COMMANDS` 提为模块常量供两处复用。需 macOS 辅助功能权限授权宿主 IDE 才能自动粘贴。
   ② **bug 1b 电平表静音也一直跳**:根因两处——`AudioRecorderService` 的 `currentLevel` 用 `average/LEVEL_CEILING` 无门控(环境噪声 ~350 映射到 0.14 仍显示柱),`StatusBarViewer.meter` 的 `Math.random()` 让恒定电平也抖。修复:currentLevel 改用自适应静音阈值做噪声门控(`gate=silenceThreshold*1.15`,≤gate 归零),meter 低于 0.04 渲染平线且抖动幅度按电平缩放——静音彻底不动,只有真人声跳。

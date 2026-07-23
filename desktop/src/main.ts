@@ -9,8 +9,11 @@
  */
 import { app, Menu, Notification, Tray, clipboard, globalShortcut, nativeImage, shell, systemPreferences } from 'electron';
 import { exec } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { dedupeAgainstSession } from '../../client/src/models/TranscriptDedupe';
+import { TranscriptHistory } from '../../client/src/models/TranscriptHistory';
 import { AudioRecorderService, FfmpegNotFoundError } from '../../client/src/services/AudioRecorderService';
 import { ApiError, CloudflareApiService } from '../../client/src/services/CloudflareApiService';
 import type { ChineseVariant, RegionPreference, RewriteMode } from '../../client/src/services/CloudflareApiService';
@@ -40,9 +43,39 @@ class DesktopApp {
   private flashTimer: NodeJS.Timeout | null = null;
   private micAccessAsked = false;
   private pasteHintShown = false; // Gates the "no accessibility → on clipboard" hint to once per session.
+  /** Local-only transcription history (history.json next to config.json; never leaves the machine). */
+  private history: TranscriptHistory;
 
   constructor(private readonly userDataDir: string) {
     this.config = loadConfig(userDataDir);
+    this.history = new TranscriptHistory(this.loadHistoryFile());
+  }
+
+  private historyFilePath(): string {
+    return path.join(this.userDataDir, 'history.json');
+  }
+
+  private loadHistoryFile(): unknown {
+    try {
+      return JSON.parse(fs.readFileSync(this.historyFilePath(), 'utf8'));
+    } catch {
+      return []; // Missing or corrupted file — TranscriptHistory sanitizes anyway.
+    }
+  }
+
+  /** Recorded BEFORE the paste so text survives even when the frontmost app rejects it. */
+  private recordHistory(text: string): void {
+    this.history.add(text);
+    this.recordHistoryFileOnly();
+    this.rebuildMenu();
+  }
+
+  private recordHistoryFileOnly(): void {
+    try {
+      fs.writeFileSync(this.historyFilePath(), JSON.stringify(this.history.toJSON(), null, 2));
+    } catch {
+      // Persistence is best-effort; the in-memory history still serves the tray menu.
+    }
   }
 
   start(): void {
@@ -114,6 +147,31 @@ class DesktopApp {
         click: () => void this.toggleRecording(),
       },
       { label: '取消录音', enabled: this.phase === 'recording', click: () => void this.cancelRecording() },
+      {
+        label: '转写历史(仅本机)',
+        submenu: [
+          ...(this.history.size === 0
+            ? [{ label: '(空)', enabled: false } as Electron.MenuItemConstructorOptions]
+            : this.history.list().slice(0, 10).map((e): Electron.MenuItemConstructorOptions => ({
+                label: e.text.length > 40 ? `${e.text.slice(0, 40)}…` : e.text,
+                toolTip: `${new Date(e.at).toLocaleString()} — 点击复制全文`,
+                click: () => {
+                  clipboard.writeText(e.text);
+                  this.notify('VibeFox', '已复制到剪贴板。');
+                },
+              }))),
+          { type: 'separator' },
+          {
+            label: '清空历史',
+            enabled: this.history.size > 0,
+            click: () => {
+              this.history.clear();
+              this.recordHistoryFileOnly();
+              this.rebuildMenu();
+            },
+          },
+        ],
+      },
       { type: 'separator' },
       {
         label: '改写模式',
@@ -376,7 +434,11 @@ class DesktopApp {
       const result = await this.api.transcribe(this.config.endpoint, licenseKey, {
         audio: mp3.toString('base64'),
         language: this.config.language,
-        keywords: [], // No workspace to mine outside the IDE; the rewrite stage still cleans fillers.
+        // No IDE workspace to mine outside VS Code, so the correction glossary is the
+        // user-maintained config.vocabulary instead — this is what lets the rewrite stage
+        // fix code identifiers / camelCase (e.g. "use effect" -> "useEffect").
+        keywords: this.config.vocabulary,
+        projectContext: this.config.projectContext.trim().length > 0 ? this.config.projectContext : undefined,
         rewriteMode: this.config.rewriteMode,
         chineseVariant: this.config.chineseVariant,
         regionPreference: this.config.dashscopeRegion,
@@ -388,6 +450,7 @@ class DesktopApp {
       }
       this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
       this.sessionChars += finalText.length;
+      this.recordHistory(finalText);
       await this.deliverText(finalText);
     } catch (err) {
       if (isNoSpeechError(err)) {
@@ -420,29 +483,6 @@ class DesktopApp {
       this.notify('VibeFox', 'License Key 已保存到系统钥匙串。');
     }
   }
-}
-
-/** Same deterministic echo trim as the extension controller: drops re-emissions of text this
- * session already pasted (ASR prompt echo / rewrite-LLM repeats), with a ≥8-char overlap rule. */
-function dedupeAgainstSession(sessionTranscript: string, text: string): string {
-  const prev = sessionTranscript;
-  const t = text.trim();
-  if (prev.length === 0 || t.length === 0) {
-    return t;
-  }
-  const normalize = (s: string): string => s.replace(/[\s。.,，、;；:：!！?？…~〜'"'"()（）\-]/g, '');
-  const nPrev = normalize(prev);
-  const nText = normalize(t);
-  if (nText.length > 0 && nPrev.endsWith(nText)) {
-    return '';
-  }
-  const max = Math.min(prev.length, t.length);
-  for (let k = max; k >= 8; k--) {
-    if (prev.endsWith(t.slice(0, k))) {
-      return t.slice(k).replace(/^[\s。.,，、;；:：!！?？…]+/, '');
-    }
-  }
-  return t;
 }
 
 /** A "no speech" 502 is a normal VAD outcome (silence between sentences), not a failure. */
