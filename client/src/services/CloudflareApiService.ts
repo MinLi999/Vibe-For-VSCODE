@@ -13,6 +13,7 @@ export type RegionPreference = 'auto' | 'apac' | 'us';
 export interface TranscribeRequest {
   /** Base64 MP3. */
   audio: string;
+  /** "auto" (default; Qwen3-ASR self-detects, Whisper fallback gets 'zh') or ISO-639-1. */
   language: string;
   keywords: string[];
   /** Free-form project context fed to the rewrite stage for terminology understanding. */
@@ -174,7 +175,10 @@ export class CloudflareApiService {
       const formData = new FormData();
       formData.append('file', blob, 'audio.mp3');
       formData.append('model', model);
-      formData.append('language', language);
+      // 'auto' = omit the field so the Whisper API self-detects (mixed zh/en dictation).
+      if (language !== 'auto' && language.length > 0) {
+        formData.append('language', language);
+      }
       formData.append('temperature', '0');
 
       // NOTE: previousTranscript is deliberately NOT prepended here — Whisper is known to echo
@@ -333,7 +337,8 @@ export class CloudflareApiService {
             file_urls: [`data:audio/mp3;base64,${audioBase64}`],
           },
           parameters: {
-            language_hints: [language || 'zh'],
+            // paraformer-v2 has no 'auto' hint value; 'zh' covers zh/en code-switching here.
+            language_hints: [language === 'auto' || !language ? 'zh' : language],
           },
         }),
         signal: submitController.signal,
