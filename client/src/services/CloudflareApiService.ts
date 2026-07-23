@@ -61,7 +61,155 @@ export class ApiError extends Error {
 
 const REQUEST_TIMEOUT_MS = 60_000;
 
+// ---- Streaming transcription (docs/04-STREAMING.md, /api/realtime) ----
+
+/** Options sent as the WS start frame; mirrors server/src/realtime.ts parseClientStart. */
+export interface StreamOptions {
+  rewriteMode: RewriteMode;
+  chineseVariant?: ChineseVariant;
+  appCategory?: AppCategory;
+  keywords: string[];
+  language?: string;
+  vadSilenceMs?: number;
+}
+
+export interface StreamCallbacks {
+  /** Server accepted the session; audio may start flowing. */
+  onReady: () => void;
+  /** Running preview of the utterance being spoken (display only, never insert). */
+  onPartial: (text: string) => void;
+  /** One finalized utterance: server-side non-speech filter + rewrite already applied. */
+  onSegment: (rawText: string, finalText: string) => void;
+  /** Server finished flushing after finish(); no more events will arrive. */
+  onDone: () => void;
+  /** Transport or protocol failure — the caller decides how to fall back. Fires at most once. */
+  onError: (error: Error) => void;
+}
+
+export interface TranscriptionStream {
+  /** Queues a raw PCM16/16k mono chunk (buffered until the socket opens). */
+  sendAudio(chunk: Buffer): void;
+  /** Signals end of speech; the server flushes remaining segments then emits done. */
+  finish(): void;
+  /** Aborts immediately (no more callbacks after this). */
+  close(): void;
+}
+
+/** Minimal structural view of the WHATWG WebSocket (Node ≥22 / recent Electron expose it globally). */
+interface WsLike {
+  readyState: number;
+  send(data: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: string, listener: (evt: { data?: unknown; message?: string }) => void): void;
+}
+type WsConstructor = new (url: string, protocols?: string[]) => WsLike;
+
+/** Streaming needs a global WHATWG WebSocket; older extension hosts fall back to the batch path. */
+export function streamingSupported(): boolean {
+  return typeof (globalThis as { WebSocket?: unknown }).WebSocket === 'function';
+}
+
 export class CloudflareApiService {
+  /**
+   * Opens a streaming session against {endpoint}/api/realtime. The license key travels as the
+   * second Sec-WebSocket-Protocol entry ("vibefox.v1, <key>") because the WHATWG WebSocket
+   * cannot set headers — never in the URL. Audio sent before the socket opens is buffered.
+   */
+  openTranscriptionStream(endpoint: string, licenseKey: string, options: StreamOptions, callbacks: StreamCallbacks): TranscriptionStream {
+    const WsCtor = (globalThis as { WebSocket?: WsConstructor }).WebSocket;
+    if (!WsCtor) {
+      throw new ApiError('network', '当前运行环境不支持 WebSocket,无法使用流式转写');
+    }
+    const url = `${endpoint.replace(/\/+$/, '').replace(/^http/, 'ws')}/api/realtime`;
+    const ws = new WsCtor(url, ['vibefox.v1', licenseKey]);
+
+    const OPEN = 1;
+    let failed = false;
+    let done = false;
+    const pending: Buffer[] = [];
+
+    const fail = (message: string): void => {
+      if (failed || done) {
+        return;
+      }
+      failed = true;
+      try {
+        ws.close(1000);
+      } catch {
+        // Already closed.
+      }
+      callbacks.onError(new ApiError('network', message));
+    };
+
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ type: 'start', ...options }));
+      for (const chunk of pending.splice(0)) {
+        ws.send(chunk);
+      }
+    });
+    ws.addEventListener('message', (evt) => {
+      if (typeof evt.data !== 'string') {
+        return;
+      }
+      let msg: { type?: string; text?: string; rawText?: string; finalText?: string; message?: string };
+      try {
+        msg = JSON.parse(evt.data) as typeof msg;
+      } catch {
+        return;
+      }
+      switch (msg.type) {
+        case 'ready':
+          callbacks.onReady();
+          break;
+        case 'partial':
+          callbacks.onPartial(msg.text ?? '');
+          break;
+        case 'segment':
+          callbacks.onSegment(msg.rawText ?? '', msg.finalText ?? msg.rawText ?? '');
+          break;
+        case 'done':
+          done = true;
+          callbacks.onDone();
+          break;
+        case 'error':
+          fail(msg.message ?? '流式转写服务端错误');
+          break;
+      }
+    });
+    ws.addEventListener('error', () => fail('流式转写连接失败'));
+    ws.addEventListener('close', () => {
+      if (!done) {
+        fail('流式转写连接中断');
+      }
+    });
+
+    return {
+      sendAudio: (chunk: Buffer): void => {
+        if (failed || done) {
+          return;
+        }
+        if (ws.readyState === OPEN) {
+          ws.send(chunk);
+        } else {
+          pending.push(chunk);
+        }
+      },
+      finish: (): void => {
+        if (!failed && !done && ws.readyState === OPEN) {
+          ws.send(JSON.stringify({ type: 'finish' }));
+        }
+      },
+      close: (): void => {
+        done = true; // Suppress the close-event error path — this is a deliberate abort.
+        try {
+          ws.close(1000);
+        } catch {
+          // Already closed.
+        }
+      },
+    };
+  }
+
   /**
    * POST {endpoint}/api/transcribe, Bearer-authenticated, 60s timeout.
    * @param endpoint Worker base URL (no trailing slash; the Controller has already checked it's non-empty)
