@@ -5,8 +5,10 @@ import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
 import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
 import { HttpError, toReasonCode } from './errors';
 import { isContextEcho, isNonSpeechTranscript } from './nonspeech';
-import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT, withChineseVariant } from './prompts';
+import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT, withAppTone, withChineseVariant } from './prompts';
+import { APP_CATEGORIES } from './types';
 import type {
+  AppCategory,
   ChineseVariant,
   Env,
   RegionPreference,
@@ -83,6 +85,7 @@ interface ParsedRequest {
   capturePeak?: number;
   chineseVariant: ChineseVariant;
   regionPreference: RegionPreference;
+  appCategory?: AppCategory;
 }
 
 /**
@@ -160,6 +163,11 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
 
   const capturePeak = typeof body['capturePeak'] === 'number' ? body['capturePeak'] : undefined;
 
+  // Unknown categories are ignored, not rejected (forward compat with newer clients).
+  const appCategory = APP_CATEGORIES.includes(body['appCategory'] as AppCategory)
+    ? (body['appCategory'] as AppCategory)
+    : undefined;
+
   return {
     audio,
     language,
@@ -171,6 +179,7 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
     capturePeak,
     chineseVariant,
     regionPreference,
+    appCategory,
   };
 }
 
@@ -272,9 +281,9 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
   const rewriteStarted = Date.now();
 
   if (body.rewriteMode !== 'off' && rawText.trim().length >= MIN_REWRITE_CHARS) {
-    const systemPrompt = withChineseVariant(
-      body.rewriteMode === 'rewrite' ? REWRITE_SYSTEM_PROMPT : CLEAN_SYSTEM_PROMPT,
-      body.chineseVariant,
+    const systemPrompt = withAppTone(
+      withChineseVariant(body.rewriteMode === 'rewrite' ? REWRITE_SYSTEM_PROMPT : CLEAN_SYSTEM_PROMPT, body.chineseVariant),
+      body.appCategory,
     );
     const userMessage = buildRewriteUserMessage(rawText, body.keywords, body.projectContext);
 
