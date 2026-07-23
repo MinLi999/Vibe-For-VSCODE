@@ -1,0 +1,41 @@
+name: Bug report
+description: Something broken in the extension, desktop app, or server
+labels: [bug]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - VS Code extension (client/)
+        - Desktop app (desktop/)
+        - Server / Worker (server/)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        OS / version:
+        VS Code version (if extension):
+        Hosted backend or self-hosted?
+        apiProvider setting (cloudflare / groq / openai / aliyun / custom):
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: |
+        Status bar text, error toasts, Output panel content. For "no speech detected" issues,
+        enable `vibefox.diagnosticSaveAudio` and describe what the saved MP3 sounds like.
+        ⚠️ Never paste API keys or license keys.
