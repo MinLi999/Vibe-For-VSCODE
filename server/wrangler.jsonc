@@ -28,6 +28,8 @@
   // ASR + 改写(qwen-plus)全部走阿里云 DashScope,key 按区域隔离、不能跨区使用,需要两把:
   // `npx wrangler secret put DASHSCOPE_API_KEY_APAC`(新加坡区 console 生成)
   // `npx wrangler secret put DASHSCOPE_API_KEY_US`(美国/Virginia 区 console 生成)
+  // 流式转写(/api/realtime)另需新加坡区 workspace id(realtime 端点主机名的一部分):
+  // `npx wrangler secret put DASHSCOPE_WORKSPACE_ID`——未配置时流式请求返回 503,批量路径不受影响。
   // 密钥值绝不进本文件(红线 2)。ANTHROPIC_API_KEY 已不再使用,可 `wrangler secret delete`。
   "vars": {
     "DASHSCOPE_BASE_URL_APAC": "https://dashscope-intl.aliyuncs.com",
