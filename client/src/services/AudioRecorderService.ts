@@ -42,6 +42,12 @@ export interface RecorderOptions {
   onSegment?: (segmentMp3: Buffer, segmentPeak: number) => void;
   /** Mid-session segment failures (e.g. compression); no UI here — the Controller decides how to surface them. */
   onSegmentError?: (error: Error) => void;
+  /**
+   * Streaming mode: emit raw PCM16/16k mono chunks as they arrive (no VAD splitting, no MP3).
+   * Level metering / peak tracking still run. Takes precedence over vadEnabled — the server's
+   * VAD owns utterance boundaries on the streaming path (docs/04-STREAMING.md).
+   */
+  onPcmChunk?: (chunk: Buffer) => void;
 }
 
 /** Exact runnable install command per platform (executed verbatim by the one-click install terminal). */
@@ -263,9 +269,11 @@ export class AudioRecorderService {
     this.currentLevel = 0;
     this.onSegmentError = options.onSegmentError;
 
-    const isVad = Boolean(options.vadEnabled && options.onSegment);
+    const isPcmStream = Boolean(options.onPcmChunk);
+    const isVad = !isPcmStream && Boolean(options.vadEnabled && options.onSegment);
 
-    const args = isVad
+    // Streaming shares the VAD path's raw-PCM ffmpeg output; only the consumer differs.
+    const args = isVad || isPcmStream
       ? [
           '-hide_banner',
           '-loglevel', 'error',
@@ -306,7 +314,7 @@ export class AudioRecorderService {
     let lastError: RecorderStartError | null = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
-        await this.trySpawn(binary, args, isVad, options, onChunk, onError);
+        await this.trySpawn(binary, args, isPcmStream ? 'pcm' : isVad ? 'vad' : 'mp3', options, onChunk, onError);
         return;
       } catch (err) {
         if (err instanceof RecorderCancelledError) {
@@ -332,7 +340,7 @@ export class AudioRecorderService {
   private trySpawn(
     binary: string,
     args: string[],
-    isVad: boolean,
+    mode: 'pcm' | 'vad' | 'mp3',
     options: RecorderOptions,
     onChunk: (chunk: Buffer) => void,
     onError: (error: Error) => void,
@@ -367,8 +375,11 @@ export class AudioRecorderService {
           clearTimeout(confirmTimer);
           resolve();
         }
-        if (isVad) {
+        if (mode === 'vad') {
           this.processPcmChunk(chunk, options, onChunk);
+        } else if (mode === 'pcm') {
+          this.meterChunk(chunk); // Level meter / peaks stay live; segmentation is the server's job.
+          options.onPcmChunk?.(chunk);
         } else {
           onChunk(chunk);
         }
@@ -474,6 +485,50 @@ export class AudioRecorderService {
     this.lastStoppedAtMs = Date.now();
   }
 
+  /**
+   * Shared per-chunk metering: amplitude average, session/segment peaks, adaptive-threshold
+   * tracking and the display level. Used by both the VAD path and the PCM streaming path
+   * (which delegates segmentation to the server but still needs a live meter and peaks).
+   */
+  private meterChunk(chunk: Buffer): { average: number; durationMs: number; silenceThreshold: number } | null {
+    let sum = 0;
+    const numSamples = Math.floor(chunk.byteLength / 2);
+    if (numSamples === 0) {
+      return null;
+    }
+    for (let i = 0; i < numSamples * 2; i += 2) {
+      sum += Math.abs(chunk.readInt16LE(i));
+    }
+    const average = sum / numSamples;
+    const durationMs = chunk.byteLength / 32;
+    this.sessionPeakAmplitude = Math.max(this.sessionPeakAmplitude, average);
+    this.currentSegmentPeak = Math.max(this.currentSegmentPeak, average);
+
+    const silenceThreshold = this.updateAdaptiveThreshold(average, durationMs);
+
+    // Display-only meter gate (independent of the VAD split threshold, which can sit as low as
+    // 350 and let a sensitive built-in mic's ambient noise leak through). Real speech averages
+    // well over 1000; ambient room noise rarely clears ~700. Gating at a comfortable margin above
+    // the measured noise floor makes silence a DEAD-FLAT baseline and only true voice moves the
+    // bars. Everything at/below the gate collapses to exactly 0. Fast attack, slow release.
+    const displayGate = Math.max((this.noiseFloor ?? 0) * 3.5, DISPLAY_GATE_FLOOR);
+    const gatedLevel = average <= displayGate ? 0 : (average - displayGate) / Math.max(1, LEVEL_CEILING - displayGate);
+    const normalized = Math.min(1, gatedLevel);
+    this.currentLevel = Math.max(normalized, this.currentLevel * 0.6);
+
+    return { average, durationMs, silenceThreshold };
+  }
+
+  /**
+   * Compresses raw PCM16/16k mono to MP3 with the exact same pipeline as VAD segments.
+   * Public for the streaming fallback path: when the WebSocket dies mid-session, the
+   * Controller re-sends its buffered PCM through the HTTP batch endpoint.
+   */
+  async compressPcm(pcm: Buffer): Promise<Buffer> {
+    const aligned = pcm.byteLength % 2 === 0 ? pcm : pcm.slice(0, pcm.byteLength - 1);
+    return this.compressToMp3(aligned, this.lastFfmpegPath);
+  }
+
   private processPcmChunk(
     chunk: Buffer,
     options: RecorderOptions,
@@ -482,29 +537,9 @@ export class AudioRecorderService {
     this.pcmChunks.push(chunk);
     this.totalPcmBytes += chunk.byteLength;
 
-    // Calculate volume average for the chunk
-    let sum = 0;
-    const numSamples = Math.floor(chunk.byteLength / 2);
-    if (numSamples > 0) {
-      for (let i = 0; i < numSamples * 2; i += 2) {
-        sum += Math.abs(chunk.readInt16LE(i));
-      }
-      const average = sum / numSamples;
-      const durationMs = chunk.byteLength / 32;
-      this.sessionPeakAmplitude = Math.max(this.sessionPeakAmplitude, average);
-      this.currentSegmentPeak = Math.max(this.currentSegmentPeak, average);
-
-      const silenceThreshold = this.updateAdaptiveThreshold(average, durationMs);
-
-      // Display-only meter gate (independent of the VAD split threshold, which can sit as low as
-      // 350 and let a sensitive built-in mic's ambient noise leak through). Real speech averages
-      // well over 1000; ambient room noise rarely clears ~700. Gating at a comfortable margin above
-      // the measured noise floor makes silence a DEAD-FLAT baseline and only true voice moves the
-      // bars. Everything at/below the gate collapses to exactly 0. Fast attack, slow release.
-      const displayGate = Math.max((this.noiseFloor ?? 0) * 3.5, DISPLAY_GATE_FLOOR);
-      const gatedLevel = average <= displayGate ? 0 : (average - displayGate) / Math.max(1, LEVEL_CEILING - displayGate);
-      const normalized = Math.min(1, gatedLevel);
-      this.currentLevel = Math.max(normalized, this.currentLevel * 0.6);
+    const metered = this.meterChunk(chunk);
+    if (metered !== null) {
+      const { average, durationMs, silenceThreshold } = metered;
 
       if (average < silenceThreshold) {
         this.silentTimeMs += durationMs;

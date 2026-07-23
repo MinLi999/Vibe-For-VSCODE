@@ -16,13 +16,23 @@ import { StatusBarViewer, REWRITE_MODE_LABELS } from '../viewer/StatusBarViewer'
 import { TextInserter, TextInsertionError, type InsertTarget, type InsertOutcome } from '../viewer/TextInserter';
 import { EditorContextViewer } from '../viewer/EditorContextViewer';
 import { AudioRecorderService, FfmpegNotFoundError, RecorderStartError } from '../services/AudioRecorderService';
-import { ApiError, CloudflareApiService, type ChineseVariant, type RegionPreference, type RewriteMode } from '../services/CloudflareApiService';
+import {
+  ApiError,
+  CloudflareApiService,
+  streamingSupported,
+  type ChineseVariant,
+  type RegionPreference,
+  type RewriteMode,
+  type TranscriptionStream,
+} from '../services/CloudflareApiService';
 import { WorkspaceContextService } from '../services/WorkspaceContextService';
 import { SystemPasteService } from '../services/SystemPasteService';
 import { KeybindingLookupService } from '../services/KeybindingLookupService';
 
 const SECRET_KEY = 'vibefox.licenseKey';
 const HISTORY_STORAGE_KEY = 'vibefox.transcriptHistory';
+/** How long the stop path waits for the streaming server to flush its final segments. */
+const STREAM_FLUSH_TIMEOUT_MS = 10_000;
 
 interface VibeConfig {
   endpoint: string;
@@ -34,6 +44,8 @@ interface VibeConfig {
   contextHint: boolean;
   /** User-maintained vocabulary (names, jargon, product nouns) — top-priority ASR bias slots. */
   personalDictionary: string[];
+  /** Streaming transcription over /api/realtime (pro tier; falls back to the batch path on any failure). */
+  streamingMode: boolean;
   vadEnabled: boolean;
   vadSilenceMs: number;
   vadMinDurationMs: number;
@@ -169,6 +181,21 @@ export class VibeController implements vscode.Disposable {
   /** Local-only transcription history (persisted in globalState; never leaves the machine). */
   private history = new TranscriptHistory();
   private historyStorage: vscode.Memento | null = null;
+
+  /**
+   * Active streaming session (vibefox.streamingMode). PCM is buffered for the ENTIRE session
+   * regardless of stream health: on any failure the whole buffer replays through the batch
+   * path and dedupeAgainstSession trims whatever segments already got inserted.
+   */
+  private streaming: {
+    stream: TranscriptionStream;
+    pcmChunks: Buffer[];
+    failed: boolean;
+    partial: string;
+    deliveries: Promise<void>;
+    donePromise: Promise<void>;
+    resolveDone: () => void;
+  } | null = null;
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -324,6 +351,7 @@ export class VibeController implements vscode.Disposable {
     }
     this.clearAutoStop();
     this.clearHoldTimers();
+    this.closeStreaming();
     await this.recorder.cancel();
     this.audioState.reset();
     this.statusBar.showIdle();
@@ -333,6 +361,7 @@ export class VibeController implements vscode.Disposable {
 
   private async startRecording(): Promise<void> {
     const config = this.readConfig();
+    let cloudflareLicenseKey: string | undefined; // Kept for the streaming path's WS auth.
 
     // Preflight checks: endpoint, license key, ffmpeg — all must be ready before entering the recording state.
     if (config.apiProvider === 'cloudflare') {
@@ -347,8 +376,8 @@ export class VibeController implements vscode.Disposable {
         return;
       }
 
-      const licenseKey = await this.ensureLicenseKey();
-      if (licenseKey === undefined) {
+      cloudflareLicenseKey = await this.ensureLicenseKey();
+      if (cloudflareLicenseKey === undefined) {
         return; // User cancelled the input.
       }
     } else if (config.apiProvider === 'groq') {
@@ -404,7 +433,22 @@ export class VibeController implements vscode.Disposable {
     this.sessionContext = config.contextHint
       ? this.buildSessionContext(config)
       : Promise.resolve({ keywords: config.personalDictionary, projectContext: '' });
-    this.statusBar.showRecording(() => this.audioState.elapsedSeconds, config.maxRecordSeconds, () => this.recorder.inputLevel);
+
+    // Streaming path: server_vad owns segmentation, so it replaces the client VAD pipeline.
+    // Any setup failure silently degrades to the regular batch flow (the whole session's PCM
+    // is buffered either way).
+    const useStreaming =
+      config.streamingMode && config.apiProvider === 'cloudflare' && cloudflareLicenseKey !== undefined && streamingSupported();
+    if (useStreaming) {
+      this.openStreamingSession(config, cloudflareLicenseKey as string, await this.sessionContext);
+    }
+
+    this.statusBar.showRecording(
+      () => this.audioState.elapsedSeconds,
+      config.maxRecordSeconds,
+      () => this.recorder.inputLevel,
+      () => this.streaming?.partial ?? '',
+    );
 
     try {
       await this.recorder.start(
@@ -417,19 +461,36 @@ export class VibeController implements vscode.Disposable {
           vadMinDurationMs: config.vadMinDurationMs,
           vadSilenceThreshold: config.vadSilenceThreshold,
           vadAdaptiveThreshold: config.vadAdaptiveThreshold,
-          onSegment: config.vadEnabled ? (segmentMp3, segmentPeak) => void this.handleVadSegment(segmentMp3, segmentPeak) : undefined,
+          onSegment:
+            !this.streaming && config.vadEnabled
+              ? (segmentMp3, segmentPeak) => void this.handleVadSegment(segmentMp3, segmentPeak)
+              : undefined,
           onSegmentError: (error) => this.sessionErrors.push(error.message),
+          onPcmChunk: this.streaming
+            ? (chunk): void => {
+                const s = this.streaming;
+                if (s === null) {
+                  return;
+                }
+                s.pcmChunks.push(chunk); // Always buffered — this is the fallback replay source.
+                if (!s.failed) {
+                  s.stream.sendAudio(chunk);
+                }
+              }
+            : undefined,
         },
         (chunk) => this.audioState.appendChunk(chunk),
         (error) => {
           // Mid-recording failure (e.g. device unplugged): reset and notify.
           this.clearAutoStop();
+          this.closeStreaming();
           this.audioState.reset();
           this.statusBar.flashResult('error', '录音中断');
           void vscode.window.showErrorMessage(`VibeFox:${error.message}`);
         },
       );
     } catch (err) {
+      this.closeStreaming();
       this.audioState.reset();
       this.statusBar.showIdle();
       const message = err instanceof RecorderStartError ? err.message : String(err);
@@ -483,6 +544,17 @@ export class VibeController implements vscode.Disposable {
     // Engine fallback chains (Qwen timeout → Whisper) can stretch to ~10s; tell the user
     // the app is working, not frozen.
     const slowHint = setTimeout(() => this.statusBar.showProcessingSlow(), 6000);
+
+    // Streaming session: segments were inserted live; the stop path only flushes/falls back.
+    if (this.streaming !== null) {
+      const config = this.sessionConfig ?? this.readConfig();
+      try {
+        await this.finishStreamingSession(config);
+      } finally {
+        clearTimeout(slowHint);
+      }
+      return;
+    }
 
     // Hoisted so the catch block can save it for the bug 1c diagnostic (loud capture → empty result).
     let audioBase64 = '';
@@ -664,6 +736,156 @@ export class VibeController implements vscode.Disposable {
     return config.contextHint
       ? this.buildSessionContext(config)
       : { keywords: config.personalDictionary, projectContext: '' };
+  }
+
+  // ── Streaming session (vibefox.streamingMode, docs/04-STREAMING.md M2) ───────
+
+  /** Opens the WS session; on ANY failure marks it failed and lets the stop path replay via batch. */
+  private openStreamingSession(config: VibeConfig, licenseKey: string, context: ContextPayload): void {
+    let resolveDone!: () => void;
+    const donePromise = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    try {
+      const stream = this.api.openTranscriptionStream(
+        config.endpoint,
+        licenseKey,
+        {
+          rewriteMode: config.rewriteMode,
+          chineseVariant: config.chineseVariant,
+          keywords: context.keywords,
+          language: config.language,
+          vadSilenceMs: config.vadSilenceMs,
+        },
+        {
+          onReady: () => {
+            /* Audio is already flowing (buffered until open). */
+          },
+          onPartial: (text) => {
+            if (this.streaming !== null) {
+              this.streaming.partial = text;
+            }
+          },
+          onSegment: (_rawText, finalText) => {
+            const s = this.streaming;
+            if (s !== null) {
+              s.partial = '';
+              s.deliveries = s.deliveries.then(() => this.handleStreamSegment(finalText));
+            }
+          },
+          onDone: () => resolveDone(),
+          onError: () => {
+            // Quiet degradation: keep recording, keep buffering; the stop path replays via batch.
+            if (this.streaming !== null) {
+              this.streaming.failed = true;
+              this.streaming.partial = '';
+            }
+            resolveDone();
+          },
+        },
+      );
+      this.streaming = { stream, pcmChunks: [], failed: false, partial: '', deliveries: Promise.resolve(), donePromise, resolveDone };
+    } catch {
+      this.streaming = null; // No WebSocket in this host — batch path takes over untouched.
+    }
+  }
+
+  /** Server already ran non-speech filtering + rewrite; the client-side tail of the pipeline still applies. */
+  private async handleStreamSegment(finalText: string): Promise<void> {
+    const config = this.sessionConfig ?? this.readConfig();
+    let text = finalText;
+    if (config.developerModeEnabled) {
+      text = this.applyDeveloperModeRules(text);
+    }
+    const deduped = dedupeAgainstSession(this.sessionTranscript, text);
+    if (deduped.trim().length === 0) {
+      return;
+    }
+    this.sessionTranscript = (this.sessionTranscript + ' ' + deduped).trim();
+    this.vadSegmentsTranscribedCount++;
+    this.sessionChars += deduped.length;
+    this.sessionEngineLabel = 'Qwen3⚡流式';
+    this.recordHistory(deduped);
+    const outcome = await this.insertWithPaste(deduped, config.insertTarget);
+    this.maybeShowPasteHint(outcome);
+  }
+
+  /** Deliberate teardown (cancel / recorder error): no fallback, no further callbacks. */
+  private closeStreaming(): void {
+    const s = this.streaming;
+    if (s === null) {
+      return;
+    }
+    this.streaming = null;
+    s.stream.close();
+    s.resolveDone();
+  }
+
+  /**
+   * Stop path for a streaming session. Happy path: finish → wait for the server to flush →
+   * session stats. Failure/timeout path: replay the entire buffered PCM through the batch
+   * endpoint — dedupeAgainstSession trims everything that already got inserted live.
+   */
+  private async finishStreamingSession(config: VibeConfig): Promise<void> {
+    const s = this.streaming;
+    this.streaming = null;
+    if (s === null) {
+      return;
+    }
+    try {
+      if (!s.failed) {
+        s.stream.finish();
+        const timedOut = await Promise.race([
+          s.donePromise.then(() => false),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(true), STREAM_FLUSH_TIMEOUT_MS)),
+        ]);
+        await s.deliveries; // Let in-flight segment insertions land before deciding anything.
+        if (!timedOut && !s.failed) {
+          this.audioState.reset();
+          this.finishSession(config);
+          return;
+        }
+      } else {
+        await s.deliveries;
+      }
+      s.stream.close();
+
+      // Batch replay fallback. Under ~0.2s of audio can't contain speech — treat as an empty take.
+      const pcm = Buffer.concat(s.pcmChunks);
+      if (pcm.byteLength < 6400) {
+        this.audioState.reset();
+        this.finishSession(config);
+        return;
+      }
+      const mp3 = await this.recorder.compressPcm(pcm);
+      const context = await this.currentSessionContext(config);
+      const result = await this.processUtterance(config, mp3.toString('base64'), context);
+      const finalText = dedupeAgainstSession(this.sessionTranscript, result.finalText);
+      if (finalText.trim().length > 0) {
+        this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
+        this.sessionChars += finalText.length;
+        this.sessionProcessingMs += result.totalMs;
+        this.sessionEngineLabel = result.engineLabel;
+        this.recordHistory(finalText);
+        const outcome = await this.insertWithPaste(finalText, config.insertTarget);
+        this.audioState.completeWithText(finalText);
+        this.finishSession(config);
+        this.maybeShowPasteHint(outcome);
+      } else {
+        this.audioState.reset();
+        this.finishSession(config);
+      }
+    } catch (err) {
+      this.audioState.reset();
+      if (this.isNoSpeechError(err)) {
+        // The buffered replay contained no speech — a normal quiet-session ending.
+        this.finishSession(config);
+        return;
+      }
+      this.statusBar.flashResult('error', '转写失败');
+      this.sessionErrors.push(err instanceof Error ? err.message : String(err));
+      this.flushSessionErrors();
+    }
   }
 
   private async handleVadSegment(segmentMp3: Buffer, segmentPeak: number): Promise<void> {
@@ -1067,6 +1289,7 @@ export class VibeController implements vscode.Disposable {
       personalDictionary: getWithFallback<string[]>('personalDictionary', [])
         .map((w) => w.trim())
         .filter((w) => w.length > 0),
+      streamingMode: getWithFallback<boolean>('streamingMode', false),
       vadEnabled: getWithFallback<boolean>('vadEnabled', true),
       vadSilenceMs: getWithFallback<number>('vadSilenceMs', 1200),
       vadMinDurationMs: getWithFallback<number>('vadMinDurationMs', 3000),
