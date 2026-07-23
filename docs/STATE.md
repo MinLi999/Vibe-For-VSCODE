@@ -2,8 +2,14 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
-**阶段**:开源化 Phase A 完成 + Phase B 两项落地/一项设计完成 (2026-07-23);路线图见 01-PRD §4。
-**健康度**:🟢 三端 typecheck+esbuild 全绿,vitest 21 例全过(server 9 + client 12),DoD 分层 grep 全绿。⚠️ 待办:用户真实录音端到端验证、间歇性空转写问题仍未关闭(见 docs/handoff.md §四)。
+**阶段**:开源化完成并已推送 GitHub;Phase B 仅剩流式转写实现(设计已完成) (2026-07-23)。
+**健康度**:🟢 三端 typecheck+esbuild 全绿,vitest 26 例全过(server 14 + client 12),DoD 分层 grep 全绿;`main` 已推送(557f2e7 / 95d2bbd / 5da4cce + 本轮)。⚠️ 待办:用户真实录音端到端验证、间歇性空转写问题仍未关闭(见 docs/handoff.md §四)。
+- 2026-07-23(**开源上线推送 + Phase B④⑤ 落地;commit 语言切英文**):
+  ① **推送**:三个英文 commit 上 GitHub main(ASR auto-language 修复 / AGPL 开源化 / 词典+历史+流式设计),GitHub Actions 首跑。**commit message 自此一律英文**(用户指定,CLAUDE.md 规则 0 已更新;内部文档仍中文)。
+  ② **B④ 前台应用感知 tone hint**:协议新增可选 `appCategory`(服务端 `APP_CATEGORIES` 白名单,未知忽略保前向兼容);desktop 新增 `frontmostApp.ts`(System Events 取 bundle id,1.5s 超时失败降级 undefined,bundle id 前缀表映射 chat/email/notes/ide/terminal),录音启动时 fire-and-forget 捕获存 `sessionAppCategory` 随每段请求发送;服务端 `withAppTone` 叠加在 `withChineseVariant` 之后,**只对 chat/email/notes 生效且明文从属于核心规则**(防语气指令越权改内容),ide/terminal/other 无操作。VS Code 扩展不发送(缺省即 IDE 语境)。
+  ③ **B⑤ rewrite 档列表排版**:REWRITE_SYSTEM_PROMPT 新增规则 7(口述顺序列举→逐行"1. / 2. "编号列表,仅明确逐点列举触发,改口重开编号沿用规则 2 只留最终版),原规则 7/8 顺延为 8/9;clean 档刻意不加(其契约=不改语序结构)。
+  ④ **测试**:server 新增 prompts.test.ts 5 例(withAppTone 无操作/追加/与繁简变体叠加、空字符串规则保持最后一条、列表规则只进 rewrite 不进 clean)。三端全绿,vitest 26 例。
+  **待实测**:B④ 需真机验证 System Events 探测在已授权辅助功能的前提下是否需要额外 Automation 授权弹窗;B⑤ 需真实口述列表样本 A/B。
 - 2026-07-23(**Phase B 推进:个人词典 + 本地转写历史落地,流式转写设计完成**):
   ① **个人词典(B②)**:`vibefox.personalDictionary`(数组设置)→ `VocabularyModel.buildPayload` 第三参,词典词以**最高优先级**进 keywords(排在活动文档 top20 之前,大小写按词典拼写,不区分大小写去重);`contextHint:false` 时词典仍生效(两处 sessionContext 构造点都改)。桌面端 config.vocabulary 既有等价物,核对语义一致无需改。vitest 3 例(优先级/大小写去重/空词典)。
   ② **本地转写历史(B③)**:新共享纯模型 `client/src/models/TranscriptHistory.ts`(cap 50,持久化数据消毒,vitest 4 例含损坏数据用例)。扩展端:globalState 持久化,新命令 `vibefox.showHistory` QuickPick(复制到剪贴板/清空);桌面端:history.json 持久化,托盘「转写历史(仅本机)」子菜单最近 10 条点击复制。**记录时机在插入之前**(粘贴目标拒收文本也不丢);client 两处插入点(整段+VAD 段)与 desktop 唯一漏斗 processSegment 均已接。隐私承诺「历史绝不上云」写入 PRD 模块 I。

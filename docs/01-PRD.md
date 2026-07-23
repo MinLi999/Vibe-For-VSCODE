@@ -59,7 +59,7 @@
 - 业务逻辑:三档 `vibefox.rewriteMode`(默认 **clean**):
   - `off` 原样转写;
   - `clean` 最小清理:修标点、去填充词(嗯/啊/那个/就是说/um/uh)、合并口吃重复、按词表校正标识符拼写大小写,不改语序;
-  - `rewrite` 深度润色:clean + 回溯自我更正折叠("用A…不对,用B"只留 B;"删掉刚才那句"执行撤回)、轻度语法重组,绝不改变技术意图、绝不添加原文没有的内容。
+  - `rewrite` 深度润色:clean + 回溯自我更正折叠("用A…不对,用B"只留 B;"删掉刚才那句"执行撤回)、轻度语法重组、**口述顺序列举自动排版为逐行编号列表(2026-07-23,"第一…第二…"→"1. / 2. "各占一行,仅明确逐点列举时触发)**,绝不改变技术意图、绝不添加原文没有的内容。
 - 提示词服务端所有(`server/src/prompts.ts`);中英混排不翻译;口述符号词(如"等号")保留文字,由客户端 developer-mode 规则最后转符号(职责分离,天然幂等)。
 - Cloudflare 链路服务端执行(Haiku→llama→原文);其他 provider 客户端调对应 chat 端点执行(内置 clean/rewrite 两套 prompt)。
 - UX:状态栏 tooltip 显示当前模式并可一键切换(`vibefox.selectRewriteMode` QuickPick);旧 `llmCorrectionEnabled` 首次启动自动迁移(true→clean,false→off)。
@@ -75,6 +75,7 @@
 - 管线:与扩展完全同源 —— 直接 import 复用 `client/src/services/` 的 `AudioRecorderService`(ffmpeg 采集 + VAD + MP3 压缩)与 `CloudflareApiService`(协议 v2),同一个 Worker、同一把 License Key、同一套改写档位;插入方式 = 剪贴板 + 模拟 ⌘V 粘贴到前台应用光标处(粘贴后约 1s 恢复原剪贴板)。
 - 配置:`~/Library/Application Support/VibeFox/config.json`(用户可直接编辑);License Key 存 macOS 钥匙串(`security` CLI,等价于扩展的 SecretStorage 红线);托盘菜单可切换改写模式/中文变体/转写区域。
 - 差异点:桌面端无工作区可挖,`keywords`/`projectContext` 为空 —— 改写阶段仍做填充词清理与标点;不做 IDE 上下文偏置。
+- **前台应用感知 tone hint(2026-07-23)**:录音启动时经 System Events 取前台 App bundle id(`frontmostApp.ts`,复用粘贴路径已有的 Apple-events 权限,失败静默降级),映射为类别(`chat`/`email`/`notes`/`ide`/`terminal`/`other`)随请求发送(协议字段 `appCategory`,服务端白名单校验,未知值忽略);服务端 `withAppTone` 只对 chat/email/notes 追加语气指令(**从属于全部核心规则,只调标点与正式度,不改内容**),ide/terminal/未知 = 无操作(基础 prompt 本就面向编程口述)。
 - 分层影响面:`desktop/src/main.ts`(controller)+ `config.ts`/`licenseStore.ts`/`paste.ts`(service);client 服务零改动。
 
 ### 模块 I:本地转写历史(2026-07-23 新增)
@@ -95,7 +96,7 @@
 
 **Phase A 开源就绪**(本期):LICENSE + 三包 license 字段;仓库清洗(1.md 删除、handoff.md 移入 docs/、git 历史密钥扫描已确认干净);英文 README / docs/SELF_HOSTING.md / CONTRIBUTING.md / issue 模板;GitHub Actions CI(三端 typecheck+build+测试);回归用例固化为 vitest(nonspeech/isContextEcho/dedupeAgainstSession);`dedupeAgainstSession` 抽为共享纯函数消除 client/desktop 双份副本。
 
-**Phase B 体验追平 Typeless**:①流式转写(`qwen3-asr-flash-realtime` WS 代理,松手即出)——**设计已完成**,见 docs/04-STREAMING.md(关键调研结论:国际版 realtime 只有新加坡区、协议为 OpenAI Realtime 风格、官方未记载词表偏置);②个人词典 ✅ 2026-07-23(模块 B);③本地转写历史 ✅ 2026-07-23(模块 I);④桌面端前台应用感知 tone hint(按 bundle id 分类 IDE/聊天/邮件);⑤rewrite 档自动结构化排版(口述列表→有序条目)。
+**Phase B 体验追平 Typeless**:①流式转写(`qwen3-asr-flash-realtime` WS 代理,松手即出)——**设计已完成**,见 docs/04-STREAMING.md(关键调研结论:国际版 realtime 只有新加坡区、协议为 OpenAI Realtime 风格、官方未记载词表偏置);②个人词典 ✅ 2026-07-23(模块 B);③本地转写历史 ✅ 2026-07-23(模块 I);④桌面端前台应用感知 tone hint ✅ 2026-07-23(模块 H);⑤rewrite 档自动结构化排版 ✅ 2026-07-23(模块 F)。**Phase B 剩余 = ①流式转写实现(M1-M4)**。
 
 **Phase C 平台覆盖**:Windows 实测(dshow + electron-builder win + SendInput 粘贴,社区优先);macOS 公证 + 自动更新 + 开机自启;Linux(pulse)最低优先级。
 
