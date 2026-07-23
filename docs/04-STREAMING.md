@@ -42,6 +42,7 @@ ffmpeg PCM16 流 ──WS──▶  鉴权(license key, plan:"pro")  ──WS─
 - **M2 client 接入**:`CloudflareApiService.transcribeStream`(WS)+ Controller 流式分支 + 状态栏 partial 预览 + 降级链;A/B 遥测(timings 对比批量)。
   **状态(2026-07-23)**:代码已落地——`vibefox.streamingMode`(默认 off,实验性标签);`streamingSupported()` 检测全局 WHATWG WebSocket(Node ≥22 宿主才有,旧宿主自动走批量);`openTranscriptionStream`(license key 走子协议,socket 未开先缓冲音频,ready/partial/segment/done/error 回调);录音服务新增 `onPcmChunk` PCM 直通模式(共享电平计量 `meterChunk` 抽取自 VAD 路径)+ 公开 `compressPcm`;Controller:整会话 PCM 双写缓冲(边发边存),partial 进状态栏预览(`showRecording` 第 4 参),segment 走 devmode 规则→dedupe→插入→历史,**任意失败静默降级 = 整段缓冲 PCM 压 MP3 重放批量端点,dedupeAgainstSession 裁掉已插入句**;stop 等 done 上限 10s,超时同样走重放。冒烟脚本 `server/scripts/realtime-smoke.mjs`(Node≥22,PCM 实时回放打印事件与延迟)。**待实测**(用户配 DASHSCOPE_WORKSPACE_ID 后):脚本跑通线上事件序列 → 扩展开 streamingMode 真口述 A/B。
 - **M3 desktop 接入**:复用同一 service;托盘 title 显示 partial。
+  **状态(2026-07-23)**:代码已落地——config.json 新增 `streamingMode`(默认 false);复用 `openTranscriptionStream`(appCategory/vocabulary 随 start 帧);托盘电平旁显示 partial 尾 10 字符;segment → dedupe → 历史 → 粘贴;降级同 M2(整段缓冲 PCM 经 `enqueueSegment` 批量重放,dedupe 裁重)。⚠️ **Electron 33(Node 20)无全局 WebSocket**:开了 streamingMode 会收到一次性提示并自动用普通模式;要在桌面端启用流式需把 electron devDependency 升到 ≥35(Node 22)并重新验证打包/签名——列为独立待办。
 - **M4 转默认**:遥测确认 p50 感知延迟 <1s 且降级率 <5% 后,streamingMode 默认 `on`。
 
 ## 6. 风险
