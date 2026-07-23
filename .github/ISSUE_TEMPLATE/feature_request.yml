@@ -1,20 +1,23 @@
-name: Feature request
-description: Suggest an improvement or new capability
+name: Feature request / 功能建议
+description: Suggest an improvement or new capability / 提一个改进或新功能
 labels: [enhancement]
 body:
+  - type: markdown
+    attributes:
+      value: 中文或英文都可以。/ Chinese or English — whichever is easier for you.
   - type: textarea
     id: problem
     attributes:
-      label: What problem would this solve?
-      description: Describe the dictation/workflow pain point, not just the solution.
+      label: What problem would this solve? / 想解决什么问题？
+      description: Describe the dictation/workflow pain point, not just the solution. / 请描述口述或工作流上的痛点，而不只是你想到的方案。
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed solution
+      label: Proposed solution / 你设想的方案
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives considered
-      description: e.g. existing settings, other tools (Typeless, Wispr Flow, Spokenly…)
+      label: Alternatives considered / 考虑过的替代方案
+      description: e.g. existing settings, other tools (Typeless, Wispr Flow, Spokenly…) / 例如现有设置项，或其他工具

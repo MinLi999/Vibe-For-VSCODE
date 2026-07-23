@@ -1,11 +1,14 @@
-name: Bug report
-description: Something broken in the extension, desktop app, or server
+name: Bug report / 问题反馈
+description: Something broken in the extension, desktop app, or server / 扩展、桌面端或服务端出了问题
 labels: [bug]
 body:
+  - type: markdown
+    attributes:
+      value: 中文或英文都可以，怎么顺手怎么来。/ Chinese or English — whichever is easier for you.
   - type: dropdown
     id: component
     attributes:
-      label: Component
+      label: Component / 组件
       options:
         - VS Code extension (client/)
         - Desktop app (desktop/)
@@ -16,14 +19,14 @@ body:
   - type: textarea
     id: what-happened
     attributes:
-      label: What happened?
-      description: What did you do, what did you expect, what happened instead?
+      label: What happened? / 发生了什么？
+      description: What did you do, what did you expect, what happened instead? / 你做了什么、预期是什么、实际发生了什么？
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
-      label: Environment
+      label: Environment / 环境
       placeholder: |
         OS / version:
         VS Code version (if extension):
@@ -34,8 +37,10 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Logs / screenshots
+      label: Logs / screenshots / 日志与截图
       description: |
         Status bar text, error toasts, Output panel content. For "no speech detected" issues,
         enable `vibefox.diagnosticSaveAudio` and describe what the saved MP3 sounds like.
-        ⚠️ Never paste API keys or license keys.
+        状态栏文字、错误弹窗、输出面板内容。若是「未识别到语音」问题，请打开
+        `vibefox.diagnosticSaveAudio`，复现后描述落盘的 MP3 里到底有没有声音。
+        ⚠️ 千万不要贴出 API Key 或 License Key。/ Never paste API keys or license keys.
