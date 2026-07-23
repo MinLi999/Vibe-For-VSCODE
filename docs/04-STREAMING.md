@@ -38,6 +38,7 @@ ffmpeg PCM16 流 ──WS──▶  鉴权(license key, plan:"pro")  ──WS─
 ## 5. 里程碑
 
 - **M1 Worker 代理**:`server/src/realtime.ts`(WebSocketPair 下行 + 上游 WS)、node 脚本用本地 PCM 文件回放实测(验证事件序列/改写编排/延迟数字);vitest 覆盖事件转换纯函数。
+  **状态(2026-07-23)**:代码已落地——`handleRealtime`(426/鉴权 401/403/非 pro 403/未配置 503)、子协议鉴权回落(`Sec-WebSocket-Protocol: vibefox.v1, <key>`,密钥不进 URL)、`runSession`(start 帧 10s 超时 → 上游连接 → session.update → 双向转发;binary=PCM 上行,partial 透传,completed 经 isNonSpeechTranscript 过滤后走 qwenRewrite 且 promise 链保序;10 分钟会话上限;双向 close 传播);`/api/realtime` 已挂进 index.ts;vitest 9 例(clamp/URL/session.update 的 auto 省略/事件分类/start 帧白名单)。**待办**:`wrangler secret put DASHSCOPE_WORKSPACE_ID`(用户动作)后用 PCM 回放脚本对线上实测事件序列与延迟。
 - **M2 client 接入**:`CloudflareApiService.transcribeStream`(WS)+ Controller 流式分支 + 状态栏 partial 预览 + 降级链;A/B 遥测(timings 对比批量)。
 - **M3 desktop 接入**:复用同一 service;托盘 title 显示 partial。
 - **M4 转默认**:遥测确认 p50 感知延迟 <1s 且降级率 <5% 后,streamingMode 默认 `on`。

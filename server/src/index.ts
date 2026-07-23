@@ -1,5 +1,6 @@
 import { authenticate } from './auth';
 import { enforceRateLimit } from './ratelimit';
+import { handleRealtime } from './realtime';
 import { handleTranscribe, HttpError } from './transcribe';
 import type { Env, ErrorResponseBody, Tier } from './types';
 
@@ -31,6 +32,11 @@ export default {
 
       if (request.method === 'OPTIONS') {
         return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+
+      // Streaming path: WebSocket upgrade, auth handled inside (header or subprotocol).
+      if (url.pathname === '/api/realtime') {
+        return handleRealtime(request, env);
       }
 
       if (url.pathname !== '/api/transcribe') {
