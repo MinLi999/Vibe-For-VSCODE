@@ -1,86 +1,88 @@
+<p align="right"><a href="README.en.md">English</a> · <b>简体中文</b></p>
+
 # VibeFox 🦊
 
-**Voice input for vibe coding — Chinese-first, built for Chinese/English code-switching.**
+**为 Vibe Coding 而生的语音输入 —— 中文优先，专治中英混杂。**
 
-Press a hotkey, speak your prompt (mixing Chinese and English code terms freely), and get cleaned-up, ready-to-send text inserted into your AI chat box in 2–4 seconds. Purpose-built for talking to Claude Code, Cline, Copilot Chat, and the Claude desktop app.
+按下热键，用中文夹着英文术语把需求说出来，2~4 秒后清理润色好的文字直接落进 AI 聊天框。专为对着 Claude Code、Cline、Copilot Chat 和 Claude 桌面版说话而做。
 
-VibeFox is fully open source (AGPL-3.0). Use the hosted backend with a license key, bring your own API keys, or self-host the whole stack.
+VibeFox 完全开源（AGPL-3.0）。你可以用官方托管后端配一把 License Key，也可以自带 API Key，或者把整套后端自己部署起来。
 
-## Why VibeFox
+## 为什么用 VibeFox
 
-Generic dictation tools garble code-switched speech like "把 AudioRecorderService 的 retry 逻辑改成 confirm-based". VibeFox is optimized end-to-end for exactly that:
+通用听写工具遇到「把 AudioRecorderService 的 retry 逻辑改成 confirm-based」这种话就乱套。VibeFox 从头到尾就是为这件事优化的：
 
-- **Dual-engine quality tier** — Qwen3-ASR (state-of-the-art Chinese/English code-switching, auto language detection) transcribes; Qwen-Plus rewrites (fillers removed, punctuation fixed, self-corrections folded: "用A…不对,用B" keeps only B). Automatic fallback to Whisper + Llama if anything fails.
-- **Project-aware accuracy** — the VS Code extension mines identifiers from your workspace and biases both the ASR and the rewrite stage, so `dedupeAgainstSession` comes out spelled and cased correctly.
-- **Personal dictionary** — `vibefox.personalDictionary` (or `vocabulary` in the desktop config) takes the top-priority bias slots for the names and jargon your ASR keeps mishearing.
-- **Rewrite modes** — `off` (verbatim) / `clean` (default: fillers, punctuation, identifier casing) / `rewrite` (fold self-corrections, light restructuring, spoken enumerations become numbered lists — never changes intent).
-- **Streaming mode** (experimental, `vibefox.streamingMode`) — transcribes while you speak and inserts each utterance as it finalizes, with a live preview in the status bar. Falls back to the batch path silently on any failure.
-- **Tone adapts to the target app** — the desktop app detects the frontmost app and lets the rewrite stage match it (chat stays casual, email stays composed); coding targets keep the default dictation tuning.
-- **Chinese variants** — Simplified (CN / SG-MY) and Traditional (TW / HK-MO) output.
-- **Bring your own key** — skip the hosted backend entirely: direct Groq / OpenAI / Alibaba Cloud / custom endpoint support built into the extension.
-- **Privacy** — the server logs engine names, timings, and lengths only. Transcript content is never logged or retained, and your local transcription history (last 50 entries, browsable from the command palette or tray menu) never leaves your machine.
+- **双引擎质量档** —— Qwen3-ASR 负责转写（2026 年中英 code-switching 第一梯队，自动检测语种），Qwen-Plus 负责改写（去填充词、修标点、折叠口误自纠：「用 A…不对，用 B」只留 B）。任一环节出问题自动降级到 Whisper + Llama。
+- **项目上下文感知** —— VS Code 扩展会扫描你工作区里的标识符，同时偏置 ASR 与改写两个阶段，所以 `dedupeAgainstSession` 这种词能被正确拼写和大小写还原。
+- **个人词典** —— `vibefox.personalDictionary`（桌面端是配置里的 `vocabulary`）占据最高优先级的偏置名额，专门收拾那些 ASR 老是听错的人名和术语。
+- **改写三档** —— `off`（原样转写）/ `clean`（默认：去填充词、修标点、校正标识符大小写）/ `rewrite`（折叠口误自纠、轻度重组、口述的「第一…第二…」自动排成编号列表 —— 但绝不改变你的意图）。
+- **流式转写**（实验性，`vibefox.streamingMode`）—— 边说边转写，每句定稿即插入，状态栏实时显示预览。任何失败都会静默回落到普通模式。
+- **语气随目标应用变化** —— 桌面端会识别当前前台应用，让改写阶段跟着调整（聊天软件保持随意，邮件保持得体）；写代码的场景维持默认的口述调校。
+- **中文四变体** —— 简体（大陆 / 新马）与繁体（台湾 / 港澳）输出。
+- **自带 Key** —— 完全不用官方后端也行：扩展内置了 Groq / OpenAI / 阿里云 / 自定义端点的直连支持。
+- **隐私** —— 服务端只记录引擎名、耗时和长度，转写内容从不记录、从不留存；本地转写历史（最近 50 条，命令面板或托盘菜单可查）永远不离开你的机器。
 
-## Two frontends, one backend
+## 两个前端，同一个后端
 
-| | VS Code extension (`client/`) | macOS menu-bar app (`desktop/`) |
+| | VS Code 扩展（`client/`） | macOS 菜单栏应用（`desktop/`） |
 |---|---|---|
-| Hotkey | `Ctrl+Shift+Space` | `⌘⌥Z` (configurable) |
-| Output goes to | AI chat input (Claude Code / Cline / Copilot Chat), editor cursor, terminal, or clipboard | Pasted into any frontmost app (Claude desktop app, browser, Notes…) |
-| Project context biasing | ✅ workspace identifier mining | personal dictionary only |
-| Target-app tone adaptation | — | ✅ |
-| Long dictation | ✅ VAD incremental segmentation (up to 10 min) | ✅ |
-| Local history | ✅ command palette | ✅ tray menu |
+| 热键 | `Ctrl+Shift+Space` | `⌘⌥Z`（可配置） |
+| 文字去哪 | AI 聊天框（Claude Code / Cline / Copilot Chat）、编辑器光标、终端或剪贴板 | 粘进任何前台应用（Claude 桌面版、浏览器、备忘录…） |
+| 项目上下文偏置 | ✅ 扫描工作区标识符 | 仅个人词典 |
+| 目标应用语气适配 | — | ✅ |
+| 长语音 | ✅ VAD 增量分段（最长 10 分钟） | ✅ |
+| 本地历史 | ✅ 命令面板 | ✅ 托盘菜单 |
 
-Both share the same Cloudflare Worker backend, license key, and rewrite settings.
+两端共用同一个 Cloudflare Worker 后端、同一把 License Key、同一套改写档位。
 
-## Quick start
+## 快速开始
 
-**Prerequisite:** `ffmpeg` on your system (`brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg`). The extension auto-detects it and offers one-click install if missing.
+**前置条件：** 系统装了 `ffmpeg`（`brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg`）。扩展会自动探测，没装的话错误提示里有「一键安装」按钮。
 
-### VS Code extension
+### VS Code 扩展
 
-1. Install the `.vsix` (Marketplace listing coming soon): `code --install-extension vibefox-*.vsix`
-2. Run **VibeFox: Set License Key** (hosted backend) — or set `vibefox.apiProvider` to `groq`/`openai`/`aliyun`/`custom` and use your own key, no license needed.
-3. Press `Ctrl+Shift+Space`, speak, press again. Done.
+1. 安装 `.vsix`（Marketplace 上架中）：`code --install-extension vibefox-*.vsix`
+2. 运行命令 **VibeFox: Set License Key**（用托管后端）—— 或者把 `vibefox.apiProvider` 改成 `groq`/`openai`/`aliyun`/`custom` 用自己的 Key，不需要 License。
+3. 按 `Ctrl+Shift+Space`，说话，再按一次。完事。
 
-### Desktop app (macOS)
+### 桌面应用（macOS）
 
-1. Build: `cd desktop && npm install && npm run dist` (or grab a release build).
-2. Launch `VibeFox.app`, grant microphone + accessibility permissions when prompted.
-3. Press `⌘⌥Z` in any app, speak, press again — the text is pasted at your cursor.
+1. 构建：`cd desktop && npm install && npm run dist`（或直接下载 release 版本）。
+2. 启动 `VibeFox.app`，按提示授予**麦克风**和**辅助功能**权限。
+3. 在任何应用里按 `⌘⌥Z`，说话，再按一次 —— 文字自动粘到光标处。
 
-### Self-hosting
+### 自己部署后端
 
-Deploy your own Cloudflare Worker backend (free tier works) with your own DashScope keys — see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+用自己的 Cloudflare Worker（免费额度够用）和自己的 DashScope Key —— 见 [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)。
 
-## Architecture
+## 架构
 
 ```
-┌─ client/   VS Code extension (TypeScript, strict MVC+S, zero runtime deps)
-├─ desktop/  Electron menu-bar app (reuses client/src/services + models directly)
-└─ server/   Cloudflare Worker: auth (KV) → rate limit → ASR → rewrite → response
-             Quality tier: Qwen3-ASR + Qwen-Plus (region-aware: SG / US)
-             Free tier & fallback chain: Workers AI Whisper + Llama 3.1
+┌─ client/   VS Code 扩展（TypeScript,严格 MVC+S,零运行时依赖）
+├─ desktop/  Electron 菜单栏应用（直接复用 client/src/services 与 models）
+└─ server/   Cloudflare Worker：鉴权(KV) → 限流 → ASR → 改写 → 响应
+             质量档：Qwen3-ASR + Qwen-Plus（区域感知：新加坡 / 美国）
+             免费档与降级链：Workers AI Whisper + Llama 3.1
 ```
 
-Audio is captured via system ffmpeg (16 kHz mono 64 kbps MP3), segmented client-side by VAD, sent as base64 over HTTPS. No binaries are bundled.
+音频经系统 ffmpeg 采集（16kHz 单声道 64kbps MP3），客户端按 VAD 分段，以 base64 走 HTTPS 上传。不捆绑任何二进制。
 
-## Development
+## 开发
 
 ```bash
 cd client  && npm install && npm run typecheck && npm run compile && npm test
-cd server  && npm install && npm run typecheck && npm test   # wrangler dev to run locally
+cd server  && npm install && npm run typecheck && npm test   # wrangler dev 本地起服务
 cd desktop && npm install && npm run typecheck && npm run compile
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for layering rules and PR guidelines. Internal design docs under [docs/](docs/) are written in Chinese.
+分层规范与 PR 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。[docs/](docs/) 下的内部设计文档为中文。
 
-## Known issues
+## 已知问题
 
-- Intermittent "no speech detected" on audio that clearly contains speech — under investigation, diagnostics built in (`vibefox.diagnosticSaveAudio`). See [docs/handoff.md](docs/handoff.md) §四.
-- Windows/Linux capture paths (dshow/pulse) are implemented but untested — reports and PRs welcome (`help wanted`).
-- Streaming mode is experimental and Singapore-region only (the international realtime endpoint has no US region), so expect extra round-trip latency from the Americas. It needs a host with a global WebSocket (Node ≥ 22); otherwise clients stay on the batch path.
+- 偶发的「未识别到语音」—— 音频里明明有声音却转写为空，根因仍在排查，已内置诊断手段（`vibefox.diagnosticSaveAudio`）。详见 [docs/handoff.md](docs/handoff.md) §四。
+- Windows/Linux 的采集路径（dshow/pulse）代码已就位但从未实测 —— 欢迎反馈与 PR（标记为 `help wanted`）。
+- 流式转写是实验性功能，且只有新加坡区可用（国际版 realtime 端点没有美国区），美洲用户会多一段往返延迟。它需要运行时带全局 WebSocket（Node ≥ 22），否则客户端会一直走普通模式。
 
-## License
+## 许可证
 
-[AGPL-3.0-only](LICENSE). Commercial hosting of the backend requires releasing your modifications under the same license.
+[AGPL-3.0-only](LICENSE)。如果你把后端改造后作为服务对外提供，需要以相同许可证公开你的修改。

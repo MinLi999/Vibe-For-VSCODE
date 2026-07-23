@@ -32,7 +32,7 @@
 3. **转写语言默认 `auto`**(`vibefox.language` 可覆盖为 ISO-639-1 强制单语):质量档 Qwen3-ASR **不指定 language、自动检测**——阿里官方文档对中英混杂音频明确建议勿指定该参数,锁 `zh` 会把英文词往中文发音上偏(2026-07-19 核实并修正);Whisper 兜底路径仍显式锁 `zh` + `temperature:0`(绕过其检测延迟)。Qwen ASR 端 context 偏置**只传纯实体词表**(keywords ≤40,禁 free-form 文本/projectContext),服务端 `isContextEcho` guard 拦截词表复读降级 Whisper(2026-07-12 提示词泄露事故的回归防线)。
 4. **录音默认 25s / 上限 600s**(`vibefox.maxRecordSeconds`):MP3 16kHz 单声道 64kbps;Worker 端拒收 base64:免费档 >4MB、质量档 >8MB(413);按 key 限流 free 10 次/分、pro 40 次/分(429)。
 4b. **改写默认开**:`vibefox.rewriteMode` 默认 `clean`(off/clean/rewrite 三档);`llmCorrection*` 为已废弃 legacy 设置(首启自动迁移);`vibe.*` 为 legacy 配置命名空间回落。
-5. **开源(2026-07-23 起,替代原闭源红线)**:全仓(client/server/desktop)以 **AGPL-3.0-only** 开源;商业模式 = open core——代码可自托管(自部署 Worker + 自备 DashScope key,或 BYOK 直连 provider),官方托管 Worker + License Key 发放是付费便利服务。**对外文档(README/SELF_HOSTING/CONTRIBUTING)用英文**,内部文档(docs/、CLAUDE.md、commit)仍中文。未经要求不发布 marketplace、不提交不推送的纪律不变。
+5. **开源(2026-07-23 起,替代原闭源红线)**:全仓(client/server/desktop)以 **AGPL-3.0-only** 开源;商业模式 = open core——代码可自托管(自部署 Worker + 自备 DashScope key,或 BYOK 直连 provider),官方托管 Worker + License Key 发放是付费便利服务。**对外文档双语**:目标用户以中文开发者为主,故 `README.md`/`CONTRIBUTING.md`/`docs/SELF_HOSTING.md` 为中文主版本,`*.en.md` 为英文版,两版顶部互链、**改动必须同步两份**;issue 模板双语。内部文档(docs/ 其余、CLAUDE.md)仍中文,**commit message 用英文**。未经要求不发布 marketplace、不提交不推送的纪律不变。
 6. **音频采集 = 系统 ffmpeg**(macOS avfoundation / Windows dshow / Linux pulse),**不捆绑二进制**(许可证风险)、不走 webview 录音(VS Code 对 webview 麦克风限制不可靠,微软官方语音扩展也是原生模块方案)。**装机负担最小化**:三级探测(`vibefox.ffmpegPath` → PATH → 各平台常见安装路径,含 Homebrew 的 `/opt/homebrew/bin`,规避 GUI 启动 PATH 缺失坑);未装时错误提示带「一键安装」按钮(内置终端自动执行 brew/winget/apt 命令)。
 7. **Worker 鉴权**:`Authorization: Bearer <LICENSE_KEY>` → `AUTH_KEYS` KV 查存在性;缺头 401,无效 403。
 

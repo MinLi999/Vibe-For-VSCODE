@@ -1,25 +1,27 @@
-# Contributing to VibeFox
+<p align="right"><a href="CONTRIBUTING.en.md">English</a> · <b>简体中文</b></p>
 
-Thanks for helping! A few ground rules keep this codebase easy to reason about.
+# 参与 VibeFox 开发
 
-## Project layout
+感谢帮忙！下面几条规矩能让这份代码保持容易理解。
 
-- `client/` — VS Code extension. **Strict MVC+S layering** (enforced by review):
-  - `models/` — pure data/state. No `vscode.window` / `vscode.commands`.
-  - `viewer/` — UI rendering/reading only. No `fetch(`, no `spawn(`, no business logic.
-  - `services/` — I/O only (recording process, HTTPS). No UI calls, **no `vscode` imports in services reused by desktop** (`AudioRecorderService`, `CloudflareApiService`, `SystemPasteService`).
-  - `controllers/` — the only layer allowed to touch M/V/S together.
-- `server/` — Cloudflare Worker. Native fetch handler; engines under `src/engines/`.
-- `desktop/` — Electron menu-bar app. Imports `client/src/services` and `client/src/models` directly — keep those vscode-free.
+## 项目结构
 
-## Hard rules
+- `client/` —— VS Code 扩展。**严格 MVC+S 分层**（代码审查时会检查）：
+  - `models/` —— 纯数据与状态。禁止 `vscode.window` / `vscode.commands`。
+  - `viewer/` —— 只做 UI 渲染与读取。禁止 `fetch(`、`spawn(`，不放业务判断。
+  - `services/` —— 只做 I/O（录音进程、HTTPS）。禁止调用 UI；**桌面端复用的那几个 service 里不能出现 `vscode` 导入**（`AudioRecorderService`、`CloudflareApiService`、`SystemPasteService`）。
+  - `controllers/` —— 唯一可以同时触碰 M/V/S 的层。
+- `server/` —— Cloudflare Worker。原生 fetch handler，各引擎在 `src/engines/` 下。
+- `desktop/` —— Electron 菜单栏应用。直接 import `client/src/services` 与 `client/src/models`，所以那些文件必须保持与 vscode 无关。
 
-1. **Code and comments in English.** User-facing product strings may be Chinese. Internal design docs (`docs/`) are Chinese.
-2. **No secrets anywhere in the repo** — keys go through `wrangler secret put` / `wrangler kv key put`, license keys live in VS Code SecretStorage / macOS Keychain. Rewrite prompts and model ids are server-owned; the API never accepts client-supplied prompts or model names.
-3. **Never log transcript content** server-side — engine names, timings, lengths, and reason codes only.
-4. **No bundled binaries** (ffmpeg/sox licensing) and no webview recording (VS Code webview mic permissions are unreliable).
+## 硬性规则
 
-## Before you open a PR
+1. **代码与注释一律英文。** 面向终端用户的产品文案可以是中文。内部设计文档（`docs/`）是中文，对外文档中英双语。
+2. **仓库里不许出现任何密钥** —— 密钥走 `wrangler secret put` / `wrangler kv key put`，License Key 存在 VS Code SecretStorage 或 macOS 钥匙串里。改写提示词与模型 id 归服务端所有，API 永远不接受客户端传入的 prompt 或模型名。
+3. **服务端绝不记录转写内容** —— 只记录引擎名、耗时、长度和原因码。
+4. **不捆绑二进制**（ffmpeg/sox 的许可证风险），**不用 webview 录音**（VS Code 对 webview 的麦克风权限不可靠）。
+
+## 提 PR 之前
 
 ```bash
 cd client  && npm run typecheck && npm run compile && npm test
@@ -27,13 +29,13 @@ cd server  && npm run typecheck && npm test
 cd desktop && npm run typecheck && npm run compile
 ```
 
-CI runs exactly this. Add tests for pure logic you touch (vitest; see `server/src/nonspeech.test.ts` and `client/src/models/TranscriptDedupe.test.ts` for the style).
+CI 跑的就是这些。改动了纯逻辑请补测试（用 vitest，风格参考 `server/src/nonspeech.test.ts` 和 `client/src/models/TranscriptDedupe.test.ts`）。
 
-## Good first contributions
+## 适合新人上手的任务
 
-- Windows/Linux testing of the capture paths (dshow/pulse) — implemented, never verified on real machines.
-- Reproductions or fixes for issues labeled `help wanted`.
+- 在真机上测试 Windows/Linux 的采集路径（dshow/pulse）—— 代码写好了但从没在真实机器上验证过。
+- 复现或修复标记为 `help wanted` 的 issue。
 
-## Commit style
+## Commit 规范
 
-Conventional-commit prefixes (`feat:`, `fix:`, `docs:`…). English or Chinese messages are both fine.
+用 conventional-commit 前缀（`feat:`、`fix:`、`docs:`…）。**Commit message 用英文**（开源项目的历史要让所有人读得懂）。
