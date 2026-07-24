@@ -55,6 +55,30 @@ VibeFox 完全开源（AGPL-3.0）。你可以用官方托管后端配一把 Lic
 
 用自己的 Cloudflare Worker（免费额度够用）和自己的 DashScope Key —— 见 [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)。
 
+## 自定义词汇表（英文技术词老是听错就靠它）
+
+ASR 对中文很稳，但英文专有名词、驼峰标识符、少见缩写经常听错。把它们写进词汇表，会**同时**用于两个环节：喂给 Qwen3-ASR 做识别偏置，以及在改写阶段校正拼写和大小写。
+
+**VS Code 扩展**：设置里搜 `vibefox.personalDictionary`，或直接编辑 `settings.json`：
+
+```json
+"vibefox.personalDictionary": ["Anthropic", "wrangler", "useEffect", "OAuth", "Kubernetes"]
+```
+
+**桌面应用**：托盘菜单 →「打开配置文件」，编辑 `vocabulary` 数组（在 `~/Library/Application Support/VibeFox/config.json`）。
+
+### 上限与配额（重要）
+
+| 限制 | 数值 | 说明 |
+|---|---|---|
+| 词表总条数 | **40** | 服务端只取**前 40 条**，多出来的静默丢弃 —— 所以**把你自己的词放前面** |
+| 单条长度 | 64 字符 | 超长的条目被丢弃 |
+| 项目背景文本 | 8000 字符 | 与词表分开，只喂给改写阶段 |
+
+在 VS Code 扩展里，这 40 个名额的分配顺序是：**个人词典（最高优先级，不限量占用）→ 当前文件标识符（最多 20）→ 工作区高频标识符（最多 15）→ 文件名**。所以个人词典写满 40 条，自动挖掘的项目词就一个都进不去了 —— 建议个人词典控制在 10~20 条，把名额留给会自动变化的项目词。
+
+**选词建议**：普通英文单词（`code`、`project`、`token`）不值得占名额，ASR 本来就听得对。名额要花在**专有名词**（`Anthropic`、`Supabase`）、**大小写特殊的标识符**（`useEffect`、`PostgreSQL`）和**你团队的黑话**上。
+
 ## 架构
 
 ```
