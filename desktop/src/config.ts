@@ -37,11 +37,15 @@ export interface DesktopConfig {
    */
   streamingMode: boolean;
   /**
-   * Correction glossary fed to the rewrite stage. List the product names, tech terms and
-   * camelCase identifiers you dictate that the ASR mis-hears or mis-cases (e.g. spoken
-   * "use effect" is restored to "useEffect"). The rewrite prompt only fixes casing/spelling
-   * for words that appear here — words outside the list are left as the ASR heard them.
-   * The server keeps at most 40 entries, 64 chars each; add your own freely.
+   * Correction glossary fed to the ASR bias channel and the rewrite stage. List the product
+   * names, tech terms and camelCase identifiers you dictate that get mis-heard or mis-cased
+   * (e.g. spoken "use effect" is restored to "useEffect"). Only words listed here get their
+   * spelling/casing corrected — anything else is left as the ASR heard it.
+   *
+   * HARD LIMIT: the server keeps the FIRST 40 entries (64 chars each) and silently drops the
+   * rest, so put your own words near the top. The seeded list below deliberately stays short
+   * to leave you room; ordinary English words are not worth a slot (the ASR gets those right
+   * already) — spend the budget on proper nouns and unusual casing.
    */
   vocabulary: string[];
   /**
@@ -119,24 +123,13 @@ export const DEFAULT_CONFIG: DesktopConfig = {
     'Docker',
     'PostgreSQL',
     'Redis',
-    // Common dictated dev nouns (casing/spelling fixed by the rewrite stage)
-    'model',
+    // Dev nouns whose casing the ASR routinely gets wrong
     'JSON',
     'Markdown',
-    'blog',
     'API',
-    'key',
-    'project',
-    'content',
-    'template',
-    'dashboard',
-    'agent',
-    'code',
-    'prompt',
-    'token',
+    'npm',
     'webhook',
     'endpoint',
-    'npm',
   ],
   projectContext:
     '用户是程序员,正在用语音向 AI 编程助手(如 Claude Code)口述编程指令。' +

@@ -55,6 +55,41 @@ Both share the same Cloudflare Worker backend, license key, and rewrite settings
 
 Deploy your own Cloudflare Worker backend (free tier works) with your own DashScope keys — see [docs/SELF_HOSTING.en.md](docs/SELF_HOSTING.en.md).
 
+## Custom vocabulary (the fix for mis-heard English tech terms)
+
+Chinese transcribes reliably, but English proper nouns, camelCase identifiers and
+uncommon acronyms often come out wrong. Words you add to the vocabulary are used
+**twice**: as bias for Qwen3-ASR, and to correct spelling/casing in the rewrite stage.
+
+**VS Code extension** — search settings for `vibefox.personalDictionary`, or edit
+`settings.json` directly:
+
+```json
+"vibefox.personalDictionary": ["Anthropic", "wrangler", "useEffect", "OAuth", "Kubernetes"]
+```
+
+**Desktop app** — tray menu → "打开配置文件", then edit the `vocabulary` array in
+`~/Library/Application Support/VibeFox/config.json`.
+
+### Limits and budget (important)
+
+| Limit | Value | Notes |
+|---|---|---|
+| Total entries | **40** | The server keeps the **first 40** and silently drops the rest — put your own words near the top |
+| Per-entry length | 64 chars | Longer entries are dropped |
+| Project context text | 8000 chars | Separate from the vocabulary; rewrite stage only |
+
+In the extension those 40 slots fill in this order: **personal dictionary (highest
+priority, takes as many slots as it needs) → active-file identifiers (up to 20) →
+workspace identifiers (up to 15) → filename stems**. A 40-entry personal dictionary
+therefore leaves nothing for the mined project vocabulary, so 10–20 entries is a good
+target, leaving room for identifiers that change as you move around the codebase.
+
+**Choosing words**: ordinary English words (`code`, `project`, `token`) aren't worth a
+slot — the ASR already gets those right. Spend the budget on **proper nouns**
+(`Anthropic`, `Supabase`), **unusual casing** (`useEffect`, `PostgreSQL`), and your
+team's private jargon.
+
 ## Architecture
 
 ```
