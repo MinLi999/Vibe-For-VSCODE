@@ -33,6 +33,20 @@ describe('isNonSpeechTranscript', () => {
     expect(isNonSpeechTranscript('帮我修复这个 bug,顺便把等号那一行也检查一下')).toBe(false);
     expect(isNonSpeechTranscript('把 AudioRecorderService 的重试逻辑改成确认式启动')).toBe(false);
   });
+
+  it('flags filler-only utterances (the trailing-segment "嗯" hallucination)', () => {
+    expect(isNonSpeechTranscript('嗯')).toBe(true);
+    expect(isNonSpeechTranscript('嗯。')).toBe(true);
+    expect(isNonSpeechTranscript('嗯嗯,呃。')).toBe(true);
+    expect(isNonSpeechTranscript('Um, uh...')).toBe(true);
+    expect(isNonSpeechTranscript('Hmm.')).toBe(true);
+  });
+
+  it('keeps utterances where fillers accompany real content', () => {
+    expect(isNonSpeechTranscript('嗯,好的,开始吧')).toBe(false);
+    expect(isNonSpeechTranscript('嗯,continue')).toBe(false);
+    expect(isNonSpeechTranscript('好嘛')).toBe(false);
+  });
 });
 
 describe('isContextEcho', () => {
