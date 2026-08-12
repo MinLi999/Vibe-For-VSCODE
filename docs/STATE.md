@@ -2,6 +2,12 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-12(**钥匙串弹窗根治 + 版权去真名 + Sparkle 自动更新全链路落地**;起因:用户截图问钥匙串权限弹窗如何消除、要求版权改成「VibeFox.app」不用真名、按 Obsidian 笔记 `Sparkle-and-Notarization-Pitfalls` 把公证与自动更新做完整、网站用户自建暂不接入):
+  ① **钥匙串弹窗根治**(`KeychainStore.reclaimOwnership`):Electron 时代用 `security` CLI 创建的条目不在原生 App 的访问名单,每次读取都问;首次成功读取后一次性 delete+add 重建条目(创建者自动进 ACL),`UserDefaults` 标记只做一次。新用户全新安装从第一天起就是自己创建自己读取,天然不会弹。
+  ② **版权去真名**:四处「© 2026 Min Li」改「© 2026 VibeFox.app」(两份 README 许可证段、Info.plist NSHumanReadableCopyright、设置窗口关于面板);`Min Li (CFA9WX4496)` 作为 Developer ID 证书身份(codesign 签名标识,Apple 要求真实法律姓名)与 STATE.md/handoff.md 里的历史技术记录**不算版权声明**,未改动。
+  ③ **Sparkle 自动更新**(`docs/SPARKLE.md` 完整记录,对照 Obsidian 五条踩坑逐一应对):`Package.swift` 加 Sparkle 2.9.x SPM 依赖(仅 App target,VibeFoxCore 保持零依赖可测);`UpdaterManager.swift`(`SPUStandardUpdaterController` + 菜单「检查更新…」,`canCheckForUpdates` 走 Combine 订阅禁用态);`scripts/bump-build-number.sh`(UTC `YYYYMMDDHHMM` 只增不减,规避踩坑#1 手填 build number 忘记递增导致更新器误判"已最新",写入**构建产物**而非源码模板);`make-app.sh` 补齐 Sparkle.framework 连同 XPC 组件(Downloader/Installer/Autoupdate)一并签名、`--notarize` 后自动跑 `sign_update` 打印可直接粘贴的 appcast `<item>`(含一次重复 length 属性的自查修复);`Info.plist` 新增 `SUFeedURL`(专属 `vibefox.app/appcast.xml`,踩坑#2 一 app 一 feed)/`SUPublicEDKey`(占位符,填错前更新验证失败关闭而非误信,故意的安全默认)/`SUEnableAutomaticChecks`/关闭自动静默安装;`macos/appcast.xml` 模板;下载 Sparkle 2.9.5 官方 CLI 工具(`generate_keys`/`sign_update`/`generate_appcast`)进 `macos/tools/sparkle-bin`(已 gitignore,非仓库源码)。**`generate_keys` 需要一次 GUI 钥匙串授权弹窗,自动化脚本代跑会卡死**——已确认(12s 未返回)并 kill,改为文档化命令交给用户在自己终端跑一次(私钥只进登录钥匙串、永不落盘进库),把打印的公钥回填 `SUPublicEDKey` 占位符。**App Sandbox 保持关闭**(要读主目录配置与钥匙串条目,踩坑#4 与 MAS 互斥,故直分发 zip 而非上架)。CI `macos` job 加 `swift build && swift test && make-app.sh --skip-sign`,不触碰任何签名/公证/Sparkle 密钥。
+  ④ **验证**:swift build 零告警、46 例全过;`--skip-sign` 与完整签名两条路径的 `make-app.sh` 各跑一遍确认 Sparkle 框架打包、build number 写入构建产物、XPC 组件签名、zip 产出、appcast 条目格式(第二轮修复重复 length 后再验一遍,输出干净)全部符合预期;四端(client/server/desktop/macos)全绿。
+  **待用户**:① 退出重开 App 一次触发钥匙串所有权迁移;② 本机跑 `xcrun notarytool store-credentials`(公证凭据,与 Sparkle key 是两把不同的密钥)+ `./tools/sparkle-bin/generate_keys`(一次 GUI 授权,回填公钥到 `SUPublicEDKey`);③ 网站(`vibefox.app`,含 `/support` 收款与 `/appcast.xml`/`/releases/` 托管)用户独立搭建,搭好后把 appcast 条目粘进 `macos/appcast.xml` 上传即完成发布闭环。
 - 2026-08-12(**全面测试加固:Swift 24→46 例,自审揪出并修复 2 个实现 bug,CI 增 macOS job**;起因:用户要求新增各类测试用例、修复发现的 bug、保证未来可用性):
   ① **自审发现并修复的 bug**:
   - `applyReplacements` 循环替换实现缺陷:替换结果包含原词(如 vibefox→"VibeFox App")时只替换第一处就中断 → 改为 `replacingOccurrences` 单遍全量替换(与 TS 的 regex 全局替换语义一致,天然免疫自引用死循环);
