@@ -6,6 +6,7 @@ import VibeFoxCore
 @main
 struct VibeFoxApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var updater = UpdaterManager()
 
     init() {
         Self.terminateIfAlreadyRunning()
@@ -30,6 +31,7 @@ struct VibeFoxApp: App {
         MenuBarExtra {
             MenuContentView()
                 .environmentObject(model)
+                .environmentObject(updater)
         } label: {
             // The label renders as soon as the status item exists — the one reliable
             // at-launch hook a MenuBarExtra-only app has (menu content is lazy).
@@ -49,6 +51,7 @@ struct VibeFoxApp: App {
 
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var updater: UpdaterManager
 
     var body: some View {
         Button(model.phase == .recording ? "停止录音并转写" : "开始录音") {
@@ -68,6 +71,13 @@ struct MenuContentView: View {
         }
 
         Text("热键:\(model.config.hotkey)")
+
+        Divider()
+
+        Button("检查更新…") {
+            updater.checkForUpdates()
+        }
+        .disabled(!updater.canCheckForUpdates)
 
         Divider()
 
