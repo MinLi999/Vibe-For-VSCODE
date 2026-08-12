@@ -14,13 +14,20 @@ import * as path from 'node:path';
 
 import { dedupeAgainstSession } from '../../client/src/models/TranscriptDedupe';
 import { TranscriptHistory } from '../../client/src/models/TranscriptHistory';
+import { UserDictionary } from '../../client/src/models/UserDictionary';
+import type { DictionarySource } from '../../client/src/models/UserDictionary';
 import { frontmostAppCategory } from './frontmostApp';
 import { AudioRecorderService, FfmpegNotFoundError } from '../../client/src/services/AudioRecorderService';
 import { ApiError, CloudflareApiService, streamingSupported } from '../../client/src/services/CloudflareApiService';
 import type { AppCategory, ChineseVariant, RegionPreference, RewriteMode, TranscriptionStream } from '../../client/src/services/CloudflareApiService';
-import { DesktopConfig, OFFICIAL_HOSTED_ENDPOINT, configFilePath, loadConfig, saveConfig } from './config';
+import { DesktopConfig, OFFICIAL_HOSTED_ENDPOINT, RESERVED_HOTKEYS, configFilePath, loadConfig, saveConfig } from './config';
+import { loadDictionary, saveDictionary } from './dictionaryStore';
+import type { HotkeyCheckResult, ImportResult, SettingsState, StateEvent } from './ipc';
 import { clearLicenseKey, getLicenseKey, setLicenseKey } from './licenseStore';
 import { pasteIntoFrontmostApp } from './paste';
+import { SettingsWindow } from './settingsWindow';
+import { loadStats, recordSession, saveStats } from './statsStore';
+import type { UsageStats } from './statsStore';
 
 type Phase = 'idle' | 'recording' | 'processing';
 
@@ -61,10 +68,20 @@ class DesktopApp {
   private streamingUnsupportedNotified = false;
   /** Cached so the tray menu (built synchronously) can show the key's state without a keychain read. */
   private licenseKeyPresent = false;
+  /** Large personal vocabulary (dictionary.json); feeds the per-session <=40 ASR keywords. */
+  private dictionary: UserDictionary;
+  private dictionaryDirty = false;
+  private stats: UsageStats;
+  private readonly settingsWindow: SettingsWindow;
+  /** ASR bias keywords selected once per recording session (dictionary first, seeds fill up). */
+  private sessionKeywords: string[] = [];
 
   constructor(private readonly userDataDir: string) {
     this.config = loadConfig(userDataDir);
     this.history = new TranscriptHistory(this.loadHistoryFile());
+    this.dictionary = loadDictionary(userDataDir);
+    this.stats = loadStats(userDataDir);
+    this.settingsWindow = new SettingsWindow(this.buildHandlers());
   }
 
   private historyFilePath(): string {
@@ -84,6 +101,13 @@ class DesktopApp {
     this.history.add(text);
     this.recordHistoryFileOnly();
     this.rebuildMenu();
+    this.settingsWindow.broadcast({ kind: 'changed' });
+  }
+
+  private setPhase(phase: Phase): void {
+    this.phase = phase;
+    this.rebuildMenu();
+    this.settingsWindow.broadcast({ kind: 'phase', phase });
   }
 
   private recordHistoryFileOnly(): void {
@@ -109,7 +133,10 @@ class DesktopApp {
       this.rebuildMenu();
     });
     this.registerHotkey();
-    if (!this.accessibilityTrusted()) {
+    if (!this.config.onboardingDone) {
+      // First run: the settings window opens in wizard mode (mic test → permissions → hotkey → practice).
+      this.settingsWindow.show(true);
+    } else if (!this.accessibilityTrusted()) {
       // Nudge once so the user knows where to grant the permission that makes auto-paste work.
       this.notify('VibeFox', `热键 ${this.config.hotkey} 已就绪。自动粘贴需要辅助功能权限:点菜单栏 🦊 →「授予辅助功能权限…」。`);
     }
@@ -117,6 +144,10 @@ class DesktopApp {
 
   shutdown(): void {
     globalShortcut.unregisterAll();
+    this.settingsWindow.dispose();
+    if (this.dictionaryDirty) {
+      saveDictionary(this.userDataDir, this.dictionary);
+    }
     void this.recorder.cancel();
   }
 
@@ -161,6 +192,8 @@ class DesktopApp {
     });
 
     const menu = Menu.buildFromTemplate([
+      { label: '设置、词库与历史…', click: () => this.settingsWindow.show() },
+      { type: 'separator' },
       { label: `热键:${this.config.hotkey}`, enabled: false },
       {
         label: this.phase === 'recording' ? '停止录音并转写' : '开始录音',
@@ -359,6 +392,7 @@ class DesktopApp {
     this.sessionChars = 0;
     this.sessionErrors = [];
     this.pasteHintShown = false;
+    this.sessionKeywords = this.buildSessionKeywords();
     // The app under the cursor when the hotkey fires is the paste target — capture its
     // category (fire-and-forget) so the rewrite stage can adapt tone. Failure → no hint.
     this.sessionAppCategory = undefined;
@@ -420,8 +454,7 @@ class DesktopApp {
       return;
     }
 
-    this.phase = 'recording';
-    this.rebuildMenu();
+    this.setPhase('recording');
     this.maxTimer = setTimeout(() => void this.stopAndFinish(), this.config.maxRecordSeconds * 1000);
     this.levelTimer = setInterval(() => {
       const idx = Math.min(LEVEL_BARS.length - 1, Math.floor(this.recorder.inputLevel * LEVEL_BARS.length));
@@ -448,8 +481,7 @@ class DesktopApp {
     this.clearRecordingTimers();
     this.closeStreaming();
     await this.recorder.cancel();
-    this.phase = 'idle';
-    this.rebuildMenu();
+    this.setPhase('idle');
     this.setTrayTitle('');
   }
 
@@ -458,8 +490,7 @@ class DesktopApp {
       return;
     }
     this.clearRecordingTimers();
-    this.phase = 'processing';
-    this.rebuildMenu();
+    this.setPhase('processing');
     this.setTrayTitle('⏳');
 
     const licenseKey = await getLicenseKey(this.userDataDir);
@@ -499,7 +530,7 @@ class DesktopApp {
           rewriteMode: this.config.rewriteMode,
           chineseVariant: this.config.chineseVariant,
           appCategory: this.sessionAppCategory,
-          keywords: this.config.vocabulary,
+          keywords: this.sessionKeywords,
           language: this.config.language,
           vadSilenceMs: this.config.vadSilenceMs,
         },
@@ -538,12 +569,14 @@ class DesktopApp {
 
   /** Server already filtered non-speech and ran the rewrite; paste with the usual session dedupe. */
   private async handleStreamSegment(finalText: string): Promise<void> {
-    const deduped = dedupeAgainstSession(this.sessionTranscript, finalText);
+    const replaced = this.dictionary.applyReplacements(finalText);
+    const deduped = dedupeAgainstSession(this.sessionTranscript, replaced);
     if (deduped.trim().length === 0) {
       return;
     }
     this.sessionTranscript = (this.sessionTranscript + ' ' + deduped).trim();
     this.sessionChars += deduped.length;
+    this.noteDictionaryUsage(deduped);
     this.recordHistory(deduped);
     await this.deliverText(deduped);
   }
@@ -596,8 +629,16 @@ class DesktopApp {
   }
 
   private finishSession(): void {
-    this.phase = 'idle';
-    this.rebuildMenu();
+    this.setPhase('idle');
+    if (this.sessionChars > 0) {
+      recordSession(this.stats, this.sessionChars);
+      saveStats(this.userDataDir, this.stats);
+    }
+    if (this.dictionaryDirty) {
+      this.dictionaryDirty = false;
+      saveDictionary(this.userDataDir, this.dictionary);
+    }
+    this.settingsWindow.broadcast({ kind: 'changed' });
     if (this.sessionErrors.length > 0) {
       const unique = [...new Set(this.sessionErrors)];
       this.notify('VibeFox', `本次录音有 ${this.sessionErrors.length} 段转写失败 —— ${unique[0]}`);
@@ -631,6 +672,7 @@ class DesktopApp {
     // the text 1s later); when untrusted, leave the transcription on the clipboard for a manual ⌘V.
     const trusted = this.accessibilityTrusted();
     await pasteIntoFrontmostApp(text, trusted && this.config.restoreClipboard);
+    this.settingsWindow.broadcast({ kind: 'delivered', text });
     if (!trusted && !this.pasteHintShown) {
       this.pasteHintShown = true;
       this.notify(
@@ -648,7 +690,7 @@ class DesktopApp {
         // No IDE workspace to mine outside VS Code, so the correction glossary is the
         // user-maintained config.vocabulary instead — this is what lets the rewrite stage
         // fix code identifiers / camelCase (e.g. "use effect" -> "useEffect").
-        keywords: this.config.vocabulary,
+        keywords: this.sessionKeywords,
         projectContext: this.config.projectContext.trim().length > 0 ? this.config.projectContext : undefined,
         rewriteMode: this.config.rewriteMode,
         chineseVariant: this.config.chineseVariant,
@@ -656,12 +698,14 @@ class DesktopApp {
         capturePeak: Math.round(this.recorder.peakAmplitude),
         appCategory: this.sessionAppCategory,
       });
-      const finalText = dedupeAgainstSession(this.sessionTranscript, result.finalText);
+      const replaced = this.dictionary.applyReplacements(result.finalText);
+      const finalText = dedupeAgainstSession(this.sessionTranscript, replaced);
       if (finalText.trim().length === 0) {
         return;
       }
       this.sessionTranscript = (this.sessionTranscript + ' ' + finalText).trim();
       this.sessionChars += finalText.length;
+      this.noteDictionaryUsage(finalText);
       this.recordHistory(finalText);
       await this.deliverText(finalText);
     } catch (err) {
@@ -674,6 +718,174 @@ class DesktopApp {
       }
       this.sessionErrors.push(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  // ---- Dictionary pipeline glue ----
+
+  /**
+   * The per-session ASR bias list: dictionary picks (usage-ranked) first, then the
+   * config.vocabulary seed words fill whatever is left of the server's 40-slot cap.
+   */
+  private buildSessionKeywords(): string[] {
+    const KEYWORD_CAP = 40;
+    const keywords = this.dictionary.selectAsrKeywords(KEYWORD_CAP);
+    const seen = new Set(keywords.map((w) => w.toLowerCase()));
+    for (const word of this.config.vocabulary) {
+      if (keywords.length >= KEYWORD_CAP) {
+        break;
+      }
+      if (!seen.has(word.toLowerCase())) {
+        seen.add(word.toLowerCase());
+        keywords.push(word);
+      }
+    }
+    return keywords;
+  }
+
+  /** Usage stats drive keyword ranking; persisted once per session (finishSession). */
+  private noteDictionaryUsage(text: string): void {
+    if (this.dictionary.recordUsage(text)) {
+      this.dictionaryDirty = true;
+    }
+  }
+
+  // ---- Settings window bridge (the renderer's server-side counterpart) ----
+
+  private async buildState(): Promise<SettingsState> {
+    return {
+      config: this.config,
+      licenseKeyPresent: this.licenseKeyPresent,
+      accessibilityTrusted: this.accessibilityTrusted(),
+      platform: process.platform,
+      history: [...this.history.list()],
+      stats: this.stats,
+      dictionary: this.dictionary.toJSON(),
+      officialEndpoint: OFFICIAL_HOSTED_ENDPOINT,
+      appVersion: app.getVersion(),
+      phase: this.phase,
+    };
+  }
+
+  private saveDictionaryNow(): void {
+    this.dictionaryDirty = false;
+    saveDictionary(this.userDataDir, this.dictionary);
+  }
+
+  private buildHandlers(): ConstructorParameters<typeof SettingsWindow>[0] {
+    const state = (): Promise<SettingsState> => this.buildState();
+    return {
+      getState: state,
+      updateConfig: async (patch: Partial<DesktopConfig>): Promise<SettingsState> => {
+        const previousHotkey = this.config.hotkey;
+        Object.assign(this.config, patch);
+        this.config.maxRecordSeconds = Math.min(600, Math.max(3, this.config.maxRecordSeconds));
+        if (this.config.endpoint.trim().length === 0) {
+          this.config.endpoint = OFFICIAL_HOSTED_ENDPOINT;
+        }
+        this.config.endpoint = this.config.endpoint.trim().replace(/\/+$/, '');
+        if (patch.hotkey !== undefined && patch.hotkey !== previousHotkey) {
+          globalShortcut.unregister(previousHotkey);
+          if (!globalShortcut.register(this.config.hotkey, () => void this.toggleRecording())) {
+            // Renderer pre-checks via checkHotkey, so this is a race loss — fall back safely.
+            this.config.hotkey = previousHotkey;
+            this.registerHotkey();
+          }
+        }
+        saveConfig(this.userDataDir, this.config);
+        this.rebuildMenu();
+        return state();
+      },
+      setLicenseKey: async (key: string): Promise<SettingsState> => {
+        await setLicenseKey(this.userDataDir, key);
+        this.licenseKeyPresent = true;
+        this.rebuildMenu();
+        return state();
+      },
+      clearLicenseKey: async (): Promise<SettingsState> => {
+        await clearLicenseKey(this.userDataDir);
+        this.licenseKeyPresent = false;
+        this.rebuildMenu();
+        return state();
+      },
+      dictAddEntry: async (word: string, aliases: string[], source?: DictionarySource): Promise<SettingsState> => {
+        this.dictionary.addEntry(word, { aliases, source });
+        this.saveDictionaryNow();
+        return state();
+      },
+      dictUpdateEntry: async (originalWord: string, word: string, aliases: string[]): Promise<SettingsState> => {
+        this.dictionary.updateEntry(originalWord, { word, aliases });
+        this.saveDictionaryNow();
+        return state();
+      },
+      dictRemoveEntry: async (word: string): Promise<SettingsState> => {
+        this.dictionary.removeEntry(word);
+        this.saveDictionaryNow();
+        return state();
+      },
+      dictAddReplacement: async (from: string, to: string, caseSensitive: boolean): Promise<SettingsState> => {
+        this.dictionary.addReplacement({ from, to, caseSensitive });
+        this.saveDictionaryNow();
+        return state();
+      },
+      dictRemoveReplacement: async (from: string): Promise<SettingsState> => {
+        this.dictionary.removeReplacement(from);
+        this.saveDictionaryNow();
+        return state();
+      },
+      dictImport: async (json: string): Promise<ImportResult> => {
+        try {
+          const added = this.dictionary.importData(JSON.parse(json));
+          this.saveDictionaryNow();
+          return { ok: true, added };
+        } catch (err) {
+          return { ok: false, added: 0, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      dictExport: async (): Promise<string> => JSON.stringify(this.dictionary.toJSON(), null, 2),
+      historyClear: async (): Promise<SettingsState> => {
+        this.history.clear();
+        this.recordHistoryFileOnly();
+        this.rebuildMenu();
+        return state();
+      },
+      copyText: async (text: string): Promise<void> => {
+        clipboard.writeText(text);
+      },
+      checkHotkey: async (accelerator: string): Promise<HotkeyCheckResult> => {
+        if (RESERVED_HOTKEYS.has(accelerator)) {
+          return { ok: false, reason: 'macOS 系统保留组合(会被系统拦截)' };
+        }
+        if (accelerator === this.config.hotkey) {
+          return { ok: true };
+        }
+        const ok = globalShortcut.register(accelerator, () => undefined);
+        if (ok) {
+          globalShortcut.unregister(accelerator);
+        }
+        return ok ? { ok: true } : { ok: false, reason: '被其他应用占用' };
+      },
+      requestAccessibility: async (): Promise<void> => {
+        this.requestAccessibility();
+      },
+      requestMicrophone: async (): Promise<boolean> => {
+        if (process.platform !== 'darwin') {
+          return true;
+        }
+        this.micAccessAsked = true;
+        return systemPreferences.askForMediaAccess('microphone').catch(() => false);
+      },
+      completeOnboarding: async (): Promise<SettingsState> => {
+        this.config.onboardingDone = true;
+        saveConfig(this.userDataDir, this.config);
+        return state();
+      },
+      openConfigFile: async (): Promise<void> => {
+        await shell.openPath(configFilePath(this.userDataDir));
+      },
+      toggleRecording: async (): Promise<void> => {
+        await this.toggleRecording();
+      },
+    };
   }
 
   // ---- License key prompt (native AppleScript dialog on macOS; notification elsewhere) ----
