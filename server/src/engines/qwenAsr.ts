@@ -53,16 +53,25 @@ interface QwenResponseShape {
  * treated as a degenerate result and falls back to Whisper.
  * Free-form projectContext stays rewrite-stage-only — see prompts.ts buildRewriteUserMessage.
  */
+/** data-URI MIME per supported upload container (protocol v2 `audioFormat`, default mp3). */
+const AUDIO_MIME: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  wav: 'audio/wav',
+};
+
 export async function qwenTranscribe(
   region: QwenRegion,
   audioBase64: string,
   language: string | undefined,
   contextWords: string[] = [],
+  audioFormat = 'mp3',
 ): Promise<string> {
   if (!region.apiKey) {
     throw new EngineError('asr', 'dashscope_not_configured');
   }
 
+  const mime = AUDIO_MIME[audioFormat] ?? AUDIO_MIME['mp3'];
   const context = contextWords.join(', ');
   const res = await fetch(`${region.baseUrl}/api/v1/services/aigc/multimodal-generation/generation`, {
     method: 'POST',
@@ -75,7 +84,7 @@ export async function qwenTranscribe(
       input: {
         messages: [
           ...(context.length > 0 ? [{ role: 'system', content: [{ text: context }] }] : []),
-          { role: 'user', content: [{ audio: `data:audio/mpeg;base64,${audioBase64}` }] },
+          { role: 'user', content: [{ audio: `data:${mime};base64,${audioBase64}` }] },
         ],
       },
       parameters: {

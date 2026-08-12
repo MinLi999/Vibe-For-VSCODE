@@ -128,6 +128,14 @@ function isNonSpeechTranscript(text: string): boolean {
   if (/^(音频|本段音频|该音频|此音频|背景音)/.test(t)) {
     return true;
   }
+  // Filler-ONLY utterances (e.g. a bare "嗯" the ASR hallucinates from the VAD trailing
+  // segment's breath noise — too short for the rewrite stage to clean, so filter it here).
+  if (t.length <= 30) {
+    const tokens = t.split(/[\s.。,，、;；:：!！?？~〜…·\-—_*]+/).filter((token) => token.length > 0);
+    if (tokens.length > 0 && tokens.every((token) => /^(嗯+|呃+|啊+|哦+|噢+|唔+|呣+|哈+|嘛+|h+m+|u+m+|u+h+|e+m+|e+r+|m+|mhm+|emm+|hmm+)$/i.test(token))) {
+      return true;
+    }
+  }
   // Classic Whisper subtitle-watermark hallucinations (only when the whole utterance is short).
   if (t.length <= 30) {
     const lower = t.toLowerCase();
