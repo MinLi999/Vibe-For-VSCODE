@@ -8,6 +8,8 @@
 
 VibeFox 完全开源（AGPL-3.0）。你可以用官方托管后端配一把 License Key，也可以自带 API Key，或者把整套后端自己部署起来。
 
+官网：**[vibefox.app](https://vibefox.app)** · VibeFox 永远免费开源，如果它帮你省下了时间，欢迎 [❤️ 自愿付费支持开发](https://vibefox.app/support)。
+
 ## 为什么用 VibeFox
 
 通用听写工具遇到「把 AudioRecorderService 的 retry 逻辑改成 confirm-based」这种话就乱套。VibeFox 从头到尾就是为这件事优化的：
@@ -24,32 +26,34 @@ VibeFox 完全开源（AGPL-3.0）。你可以用官方托管后端配一把 Lic
 
 ## 两个前端，同一个后端
 
-| | VS Code 扩展（`client/`） | macOS 菜单栏应用（`desktop/`） |
+| | VS Code 扩展（`client/`） | macOS 原生 App（`macos/`） |
 |---|---|---|
-| 热键 | `Ctrl+Shift+Space` | `⌘⌥Z`（可配置） |
+| 热键 | `Ctrl+Shift+Space` | `⌘⌥Z` 或 **Fn 键**（轻按开关，**按住即说**） |
 | 文字去哪 | AI 聊天框（Claude Code / Cline / Copilot Chat）、编辑器光标、终端或剪贴板 | 粘进任何前台应用（Claude 桌面版、浏览器、备忘录…） |
-| 项目上下文偏置 | ✅ 扫描工作区标识符 | 仅个人词典 |
+| 项目上下文偏置 | ✅ 扫描工作区标识符 | ✅ 用户词库（1 万条，自动挑选 ≤40 做偏置） |
 | 目标应用语气适配 | — | ✅ |
-| 长语音 | ✅ VAD 增量分段（最长 10 分钟） | ✅ |
-| 本地历史 | ✅ 命令面板 | ✅ 托盘菜单 |
+| 长语音 | ✅ VAD 增量分段（最长 10 分钟） | ✅ VAD 增量分段 + 流式转写 |
+| 设置界面 | VS Code 设置 | ✅ 原生设置窗口（词库/历史/统计/新手引导） |
+| 录音指示 | 状态栏 | ✅ 悬浮 HUD（波形 + 实时预览） |
+| 依赖 | 系统 ffmpeg | **零依赖**（AVAudioEngine 原生采集） |
 
-两端共用同一个 Cloudflare Worker 后端、同一把 License Key、同一套改写档位。
+两端共用同一个 Cloudflare Worker 后端、同一把 License Key、同一套改写档位。`desktop/` 下还有早期的 Electron 版菜单栏应用（与原生 App 共用数据文件），已由原生 App 取代、仅作参考保留。
 
 ## 快速开始
 
-**前置条件：** 系统装了 `ffmpeg`（`brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg`）。扩展会自动探测，没装的话错误提示里有「一键安装」按钮。
+### macOS 原生 App（推荐）
+
+1. 构建：`cd macos && ./scripts/make-app.sh`（需要 Xcode；或直接下载 release 的 `VibeFox.zip`）。
+2. 打开 `build/VibeFox.app`，跟随新手引导授予**麦克风**和**辅助功能**权限并现场练习一次。
+3. 在任何应用里按 `⌘⌥Z`（或在设置中改为 Fn 键），说话，再按一次 —— 文字自动粘到光标处。零外部依赖，不需要 ffmpeg。
 
 ### VS Code 扩展
+
+**前置条件：** 系统装了 `ffmpeg`（`brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg`）。扩展会自动探测，没装的话错误提示里有「一键安装」按钮。
 
 1. 安装 `.vsix`（Marketplace 上架中）：`code --install-extension vibefox-*.vsix`
 2. 运行命令 **VibeFox: Set License Key**（用托管后端）—— 或者把 `vibefox.apiProvider` 改成 `groq`/`openai`/`aliyun`/`custom` 用自己的 Key，不需要 License。
 3. 按 `Ctrl+Shift+Space`，说话，再按一次。完事。
-
-### 桌面应用（macOS）
-
-1. 构建：`cd desktop && npm install && npm run dist`（或直接下载 release 版本）。
-2. 启动 `VibeFox.app`，按提示授予**麦克风**和**辅助功能**权限。
-3. 在任何应用里按 `⌘⌥Z`，说话，再按一次 —— 文字自动粘到光标处。
 
 ### 自己部署后端
 
@@ -83,17 +87,19 @@ ASR 对中文很稳，但英文专有名词、驼峰标识符、少见缩写经�
 
 ```
 ┌─ client/   VS Code 扩展（TypeScript,严格 MVC+S,零运行时依赖）
-├─ desktop/  Electron 菜单栏应用（直接复用 client/src/services 与 models）
+├─ macos/    macOS 原生 App（Swift/SwiftUI,AVAudioEngine 采集,零外部依赖）
+├─ desktop/  Electron 菜单栏应用（legacy,已由 macos/ 取代,数据文件互通）
 └─ server/   Cloudflare Worker：鉴权(KV) → 限流 → ASR → 改写 → 响应
              质量档：Qwen3-ASR + Qwen-Plus（区域感知：新加坡 / 美国）
              免费档与降级链：Workers AI Whisper + Llama 3.1
 ```
 
-音频经系统 ffmpeg 采集（16kHz 单声道 64kbps MP3），客户端按 VAD 分段，以 base64 走 HTTPS 上传。不捆绑任何二进制。
+音频统一为 16kHz 单声道:原生 App 用 AVAudioEngine 采集并编码 AAC；VS Code 扩展经系统 ffmpeg 采集编码 MP3。客户端按 VAD 分段，以 base64 走 HTTPS 上传（协议字段 `audioFormat`），流式模式走 WebSocket。不捆绑任何二进制。
 
 ## 开发
 
 ```bash
+cd macos   && swift build && swift test                      # 原生 App(需 Xcode)
 cd client  && npm install && npm run typecheck && npm run compile && npm test
 cd server  && npm install && npm run typecheck && npm test   # wrangler dev 本地起服务
 cd desktop && npm install && npm run typecheck && npm run compile
@@ -107,6 +113,8 @@ cd desktop && npm install && npm run typecheck && npm run compile
 - Windows/Linux 的采集路径（dshow/pulse）代码已就位但从未实测 —— 欢迎反馈与 PR（标记为 `help wanted`）。
 - 流式转写是实验性功能，且只有新加坡区可用（国际版 realtime 端点没有美国区），美洲用户会多一段往返延迟。它需要运行时带全局 WebSocket（Node ≥ 22），否则客户端会一直走普通模式。
 
-## 许可证
+## 许可证与支持
 
-[AGPL-3.0-only](LICENSE)。如果你把后端改造后作为服务对外提供，需要以相同许可证公开你的修改。
+© 2026 Min Li · [AGPL-3.0-only](LICENSE)。如果你把后端改造后作为服务对外提供，需要以相同许可证公开你的修改。
+
+VibeFox 永远开源、可自托管。官方托管后端 + License Key 是付费便利服务；软件本身免费，[自愿付费支持](https://vibefox.app/support)让开发持续下去。官网：[vibefox.app](https://vibefox.app)。
