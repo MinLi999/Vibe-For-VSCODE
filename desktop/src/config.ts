@@ -36,6 +36,8 @@ export interface DesktopConfig {
    * silently falls back to the batch path otherwise or on any stream failure.
    */
   streamingMode: boolean;
+  /** Whether the first-run onboarding wizard in the settings window has been completed. */
+  onboardingDone: boolean;
   /**
    * Correction glossary fed to the ASR bias channel and the rewrite stage. List the product
    * names, tech terms and camelCase identifiers you dictate that get mis-heard or mis-cased
@@ -63,7 +65,7 @@ export interface DesktopConfig {
  * never fires — the classic "hotkey does nothing" trap. Any stored value here is auto-migrated to
  * the current default. Space + Ctrl/Cmd/Opt combos are input-source / Spotlight / emoji switchers.
  */
-const RESERVED_HOTKEYS = new Set<string>([
+export const RESERVED_HOTKEYS = new Set<string>([
   'Control+Space',           // macOS: select previous input source
   'Control+Alt+Space',       // macOS: select next input source (the original default — reserved!)
   'Command+Space',           // macOS: Spotlight
@@ -95,6 +97,7 @@ export const DEFAULT_CONFIG: DesktopConfig = {
   dashscopeRegion: 'auto',
   restoreClipboard: true,
   streamingMode: false,
+  onboardingDone: false,
   // Seeded from a scan of this codebase plus common dev proper nouns most prone to ASR
   // mis-hearing. Kept under the server's 40-entry cap. Users edit config.json to tune.
   vocabulary: [
