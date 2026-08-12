@@ -65,3 +65,17 @@ jobs:
         working-directory: desktop
       - run: npm run compile
         working-directory: desktop
+
+  macos:
+    name: macos (native SwiftUI app)
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift build
+      - run: swift test
+      # Bundle assembly without codesigning (the Developer ID cert only exists locally).
+      - run: ./scripts/make-app.sh --skip-sign

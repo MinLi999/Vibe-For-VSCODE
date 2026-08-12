@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleExecutable</key>
+	<string>VibeFox</string>
+	<!-- Same bundle id as the Electron build so existing TCC grants (mic, accessibility,
+	     both keyed to bundle id + Developer ID cert) carry over to the native app. -->
+	<key>CFBundleIdentifier</key>
+	<string>com.vibefox.desktop</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>VibeFox</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<!-- Menu-bar agent: no Dock icon, no app switcher entry. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>VibeFox 需要使用麦克风来把你的语音转写成文字。</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Min Li · AGPL-3.0-only · https://vibefox.app</string>
+</dict>
+</plist>
