@@ -8,6 +8,8 @@ Press a hotkey, speak your prompt (mixing Chinese and English code terms freely)
 
 VibeFox is fully open source (AGPL-3.0). Use the hosted backend with a license key, bring your own API keys, or self-host the whole stack.
 
+Website: **[vibefox.app](https://vibefox.app)** · VibeFox is free forever — if it saves you time, consider [❤️ supporting development](https://vibefox.app/support).
+
 ## Why VibeFox
 
 Generic dictation tools garble code-switched speech like "把 AudioRecorderService 的 retry 逻辑改成 confirm-based". VibeFox is optimized end-to-end for exactly that:
@@ -24,32 +26,34 @@ Generic dictation tools garble code-switched speech like "把 AudioRecorderServi
 
 ## Two frontends, one backend
 
-| | VS Code extension (`client/`) | macOS menu-bar app (`desktop/`) |
+| | VS Code extension (`client/`) | Native macOS app (`macos/`) |
 |---|---|---|
-| Hotkey | `Ctrl+Shift+Space` | `⌘⌥Z` (configurable) |
+| Hotkey | `Ctrl+Shift+Space` | `⌘⌥Z` or the **Fn key** (tap to toggle, **hold to talk**) |
 | Output goes to | AI chat input (Claude Code / Cline / Copilot Chat), editor cursor, terminal, or clipboard | Pasted into any frontmost app (Claude desktop app, browser, Notes…) |
-| Project context biasing | ✅ workspace identifier mining | personal dictionary only |
+| Project context biasing | ✅ workspace identifier mining | ✅ user dictionary (10k entries, top ≤40 auto-selected per request) |
 | Target-app tone adaptation | — | ✅ |
-| Long dictation | ✅ VAD incremental segmentation (up to 10 min) | ✅ |
-| Local history | ✅ command palette | ✅ tray menu |
+| Long dictation | ✅ VAD incremental segmentation (up to 10 min) | ✅ VAD segmentation + streaming |
+| Settings UI | VS Code settings | ✅ native settings window (dictionary / history / stats / onboarding) |
+| Recording indicator | status bar | ✅ floating HUD (waveform + live preview) |
+| Dependencies | system ffmpeg | **none** (native AVAudioEngine capture) |
 
-Both share the same Cloudflare Worker backend, license key, and rewrite settings.
+Both share the same Cloudflare Worker backend, license key, and rewrite settings. `desktop/` still contains the earlier Electron menu-bar app (shares the same data files); it has been superseded by the native app and is kept for reference.
 
 ## Quick start
 
-**Prerequisite:** `ffmpeg` on your system (`brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg`). The extension auto-detects it and offers one-click install if missing.
+### Native macOS app (recommended)
+
+1. Build: `cd macos && ./scripts/make-app.sh` (needs Xcode; or grab `VibeFox.zip` from a release).
+2. Open `build/VibeFox.app` and follow the onboarding wizard — it walks you through microphone + accessibility permissions and a live practice round.
+3. Press `⌘⌥Z` in any app (or switch to the Fn key in Settings), speak, press again — the text is pasted at your cursor. Zero external dependencies; no ffmpeg.
 
 ### VS Code extension
+
+**Prerequisite:** `ffmpeg` on your system (`brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg`). The extension auto-detects it and offers one-click install if missing.
 
 1. Install the `.vsix` (Marketplace listing coming soon): `code --install-extension vibefox-*.vsix`
 2. Run **VibeFox: Set License Key** (hosted backend) — or set `vibefox.apiProvider` to `groq`/`openai`/`aliyun`/`custom` and use your own key, no license needed.
 3. Press `Ctrl+Shift+Space`, speak, press again. Done.
-
-### Desktop app (macOS)
-
-1. Build: `cd desktop && npm install && npm run dist` (or grab a release build).
-2. Launch `VibeFox.app`, grant microphone + accessibility permissions when prompted.
-3. Press `⌘⌥Z` in any app, speak, press again — the text is pasted at your cursor.
 
 ### Self-hosting
 
@@ -94,17 +98,19 @@ team's private jargon.
 
 ```
 ┌─ client/   VS Code extension (TypeScript, strict MVC+S, zero runtime deps)
-├─ desktop/  Electron menu-bar app (reuses client/src/services + models directly)
+├─ macos/    Native macOS app (Swift/SwiftUI, AVAudioEngine capture, zero external deps)
+├─ desktop/  Electron menu-bar app (legacy — superseded by macos/, shares its data files)
 └─ server/   Cloudflare Worker: auth (KV) → rate limit → ASR → rewrite → response
              Quality tier: Qwen3-ASR + Qwen-Plus (region-aware: SG / US)
              Free tier & fallback chain: Workers AI Whisper + Llama 3.1
 ```
 
-Audio is captured via system ffmpeg (16 kHz mono 64 kbps MP3), segmented client-side by VAD, sent as base64 over HTTPS. No binaries are bundled.
+Audio is 16 kHz mono everywhere: the native app captures via AVAudioEngine and encodes AAC; the VS Code extension captures via system ffmpeg and encodes MP3. Clients segment by VAD and upload base64 over HTTPS (protocol field `audioFormat`); streaming mode uses a WebSocket. No binaries are bundled.
 
 ## Development
 
 ```bash
+cd macos   && swift build && swift test                      # native app (needs Xcode)
 cd client  && npm install && npm run typecheck && npm run compile && npm test
 cd server  && npm install && npm run typecheck && npm test   # wrangler dev to run locally
 cd desktop && npm install && npm run typecheck && npm run compile
@@ -118,6 +124,8 @@ See [CONTRIBUTING.en.md](CONTRIBUTING.en.md) for layering rules and PR guideline
 - Windows/Linux capture paths (dshow/pulse) are implemented but untested — reports and PRs welcome (`help wanted`).
 - Streaming mode is experimental and Singapore-region only (the international realtime endpoint has no US region), so expect extra round-trip latency from the Americas. It needs a host with a global WebSocket (Node ≥ 22); otherwise clients stay on the batch path.
 
-## License
+## License & support
 
-[AGPL-3.0-only](LICENSE). Commercial hosting of the backend requires releasing your modifications under the same license.
+© 2026 Min Li · [AGPL-3.0-only](LICENSE). Commercial hosting of the backend requires releasing your modifications under the same license.
+
+VibeFox is open source and self-hostable forever. The hosted backend + license keys are a paid convenience; the software itself is free — [voluntary support](https://vibefox.app/support) keeps development going. Website: [vibefox.app](https://vibefox.app).

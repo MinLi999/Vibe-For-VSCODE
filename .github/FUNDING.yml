@@ -1,0 +1,4 @@
+# Shows the "Sponsor" button on the GitHub repo.
+# VibeFox is free software (AGPL-3.0); paying is always voluntary.
+custom: ["https://vibefox.app/support"]
+# github: [MinLi999]  # Uncomment after enrolling in GitHub Sponsors.
