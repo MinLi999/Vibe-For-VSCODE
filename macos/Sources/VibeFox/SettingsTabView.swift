@@ -162,7 +162,7 @@ struct SettingsTabView: View {
                             Link("源代码(GitHub)", destination: URL(string: "https://github.com/MinLi999/Vibe-For-VSCODE")!)
                             Link("❤️ 支持开发者", destination: URL(string: "https://vibefox.app/support")!)
                         }
-                        Text("VibeFox 0.2.0 · 自由软件,AGPL-3.0-only 许可 · © 2026 Min Li")
+                        Text("VibeFox 0.2.0 · 自由软件,AGPL-3.0-only 许可 · © 2026 VibeFox.app")
                             .font(.callout).foregroundStyle(.secondary)
                         Text("VibeFox 永远开源、可自托管。如果它帮你省下了时间,欢迎自愿付费支持持续开发。")
                             .font(.callout).foregroundStyle(.secondary)
