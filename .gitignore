@@ -10,6 +10,10 @@ out/
 # Electron desktop packaging output
 desktop/release/
 
+# Native macOS app build output
+macos/.build/
+macos/build/
+
 # Cloudflare / Wrangler
 server/.wrangler/
 server/.dev.vars
