@@ -6,9 +6,10 @@ import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
 import { HttpError, toReasonCode } from './errors';
 import { isContextEcho, isNonSpeechTranscript } from './nonspeech';
 import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT, withAppTone, withChineseVariant } from './prompts';
-import { APP_CATEGORIES } from './types';
+import { APP_CATEGORIES, AUDIO_FORMATS } from './types';
 import type {
   AppCategory,
+  AudioFormat,
   ChineseVariant,
   Env,
   RegionPreference,
@@ -76,6 +77,7 @@ export function buildInitialPrompt(keywords: string[]): string | undefined {
 
 interface ParsedRequest {
   audio: string;
+  audioFormat: AudioFormat;
   language: string;
   keywords: string[];
   projectContext?: string;
@@ -109,6 +111,12 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
   if (!BASE64_PATTERN.test(audio)) {
     throw new HttpError(400, 'Field "audio" is not valid base64');
   }
+
+  // Unknown containers fall back to mp3 (forward compat); Whisper sniffs the container itself,
+  // only the Qwen data-URI MIME depends on this.
+  const audioFormat: AudioFormat = AUDIO_FORMATS.includes(body['audioFormat'] as AudioFormat)
+    ? (body['audioFormat'] as AudioFormat)
+    : 'mp3';
 
   // Absent field keeps the historical v1 default ('zh'); v2 clients send 'auto' explicitly.
   let language = 'zh';
@@ -170,6 +178,7 @@ export function parseRequestBody(raw: unknown, maxAudioBase64: number): ParsedRe
 
   return {
     audio,
+    audioFormat,
     language,
     keywords,
     projectContext,
@@ -214,6 +223,7 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
           body.audio,
           body.language === 'auto' ? undefined : body.language,
           body.keywords,
+          body.audioFormat,
         );
         // Qwen intermittently returns a DEGENERATE result (empty / single char / hallucinated
         // noise-description) on audio that clearly HAD speech — reported in the field with the

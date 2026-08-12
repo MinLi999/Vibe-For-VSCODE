@@ -64,9 +64,15 @@ export type AppCategory = (typeof APP_CATEGORIES)[number];
  * (`llmCorrect: true` maps to `rewriteMode: 'clean'`); v1 `llmPrompt`/`llmModel` are parsed but
  * IGNORED — prompts and model ids are server-owned (billing-abuse hardening).
  */
+/** Supported audio upload containers. Native macOS clients send m4a (no MP3 encoder in AVFoundation). */
+export const AUDIO_FORMATS = ['mp3', 'm4a', 'wav'] as const;
+export type AudioFormat = (typeof AUDIO_FORMATS)[number];
+
 export interface TranscribeRequestBody {
-  /** Base64-encoded MP3 (16kHz mono, compressed client-side). */
+  /** Base64-encoded audio (16kHz mono, compressed client-side; container per `audioFormat`). */
   audio: string;
+  /** Container of `audio` (default 'mp3'; unknown values fall back to 'mp3'). */
+  audioFormat?: AudioFormat;
   /**
    * "auto" (v2 client default) or ISO-639-1. 'auto' lets Qwen3-ASR self-detect (official
    * recommendation for mixed zh/en audio); the Whisper fallback still receives an explicit
