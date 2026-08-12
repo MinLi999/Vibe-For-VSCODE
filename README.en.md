@@ -126,6 +126,6 @@ See [CONTRIBUTING.en.md](CONTRIBUTING.en.md) for layering rules and PR guideline
 
 ## License & support
 
-© 2026 Min Li · [AGPL-3.0-only](LICENSE). Commercial hosting of the backend requires releasing your modifications under the same license.
+© 2026 VibeFox.app · [AGPL-3.0-only](LICENSE). Commercial hosting of the backend requires releasing your modifications under the same license.
 
 VibeFox is open source and self-hostable forever. The hosted backend + license keys are a paid convenience; the software itself is free — [voluntary support](https://vibefox.app/support) keeps development going. Website: [vibefox.app](https://vibefox.app).

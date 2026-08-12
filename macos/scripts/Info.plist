@@ -28,6 +28,21 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>VibeFox 需要使用麦克风来把你的语音转写成文字。</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>© 2026 Min Li · AGPL-3.0-only · https://vibefox.app</string>
+	<string>© 2026 VibeFox.app · AGPL-3.0-only</string>
+
+	<!-- Sparkle auto-update (docs/SPARKLE.md). Feed URL: one appcast per app (pitfall #2) —
+	     never point this at a shared/other-app feed. SUPublicEDKey is a PLACEHOLDER until
+	     `tools/sparkle-bin/generate_keys` is run once locally; with a placeholder key Sparkle
+	     fails closed (no update ever verifies) rather than silently trusting anything. -->
+	<key>SUFeedURL</key>
+	<string>https://vibefox.app/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>REPLACE_WITH_SPARKLE_PUBLIC_KEY</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
 </dict>
 </plist>
