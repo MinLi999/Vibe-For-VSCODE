@@ -115,6 +115,6 @@ cd desktop && npm install && npm run typecheck && npm run compile
 
 ## 许可证与支持
 
-© 2026 Min Li · [AGPL-3.0-only](LICENSE)。如果你把后端改造后作为服务对外提供，需要以相同许可证公开你的修改。
+© 2026 VibeFox.app · [AGPL-3.0-only](LICENSE)。如果你把后端改造后作为服务对外提供，需要以相同许可证公开你的修改。
 
 VibeFox 永远开源、可自托管。官方托管后端 + License Key 是付费便利服务；软件本身免费，[自愿付费支持](https://vibefox.app/support)让开发持续下去。官网：[vibefox.app](https://vibefox.app)。
