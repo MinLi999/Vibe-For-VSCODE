@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  VibeFox's Sparkle update feed. One feed per app (never share this file with another
+  project's appcast — see docs/SPARKLE.md pitfall #2). Host this at the exact URL in
+  scripts/Info.plist's SUFeedURL (https://vibefox.app/appcast.xml).
+
+  This file starts empty (no <item>s = no update ever offered, which is the safe default
+  for a repo with no releases yet). After running `scripts/make-app.sh --notarize`, paste
+  the printed <item> block in below <channel>, newest release first, then re-upload this
+  file to the website.
+-->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>VibeFox</title>
+    <link>https://vibefox.app/appcast.xml</link>
+    <description>VibeFox release updates</description>
+    <language>en</language>
+    <!-- <item> entries go here, newest first. -->
+  </channel>
+</rss>
