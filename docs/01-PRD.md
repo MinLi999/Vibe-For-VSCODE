@@ -84,6 +84,18 @@
 - 桌面端:存 `history.json`(config.json 同目录);托盘菜单「转写历史(仅本机)」子菜单显示最近 10 条,点击复制,含「清空历史」。
 - 分层影响面:Model:`TranscriptHistory`(纯函数,client/desktop 共享,含持久化数据消毒);Controller/desktop main 负责持久化与 UI 调度。
 
+### 模块 J:桌面端设置中心与用户词库(2026-08-08,Phase E M-A)
+- 业务目标:把 desktop 从「托盘工具」升级为完整 Mac 语音输入法产品——完整设置 UI、大容量个人词库、上手引导,对标 Typeless/Wispr(方案与竞品对照见 docs/05-MAC-VOICE-INPUT.md)。
+- **设置窗口**(菜单栏「设置、词库与历史…」/首启自动打开):BrowserWindow + contextBridge 类型化 IPC(`ipc.ts` 单 invoke 通道),无框架渲染层,四 Tab:
+  1. 首页:今日/累计字数、录音次数、估算节省时间(手打 40 字/分基准)+ 历史搜索/复制/清空;
+  2. 词库:词条 CRUD(来源标记 manual/✨learned/👤contacts、命中计数)+ 替换规则 + JSON 导入导出;
+  3. 风格:改写三档卡片、语言/中文变体/区域、流式开关;
+  4. 设置:热键捕获(试注册校验+系统保留组合拒绝)、License Key/服务地址、录音参数、麦克风实测电平、辅助功能状态、重跑引导。
+- **用户词库三层**(共享 Model `client/src/models/UserDictionary.ts`,容量 1 万条,dictionary.json 仅本机):L1 每会话 `selectAsrKeywords(≤40)`(recency+hits 打分,config.vocabulary 补位)走既有 keywords 通道,isContextEcho 红线不动;L2 改写校正层(M-C 待做);L3 `applyReplacements` 转写后本地字面替换(不限量、零 token)。命中自动计数反哺 L1 排序。
+- **Onboarding 六步向导**:欢迎→麦克风实测→辅助功能(轮询自动确认)→热键试按→练习场(3 条预置句)→就绪;`config.onboardingDone` 控制首启。
+- **统计**:stats.json(累计+90 天按日),会话结束记录;仅本机。
+- 分层影响面:Model 共享 `UserDictionary`;Service `dictionaryStore`/`statsStore`/`settingsWindow`(窗口宿主);View `ui/settings.{html,ts}`(零 fetch/spawn/业务);Controller main.ts(IPC handlers、会话词表、phase 广播)。
+
 ## 3. 绝对禁止(Out of Scope)
 - 支付/授权门户(key 用 wrangler CLI 手工发放;Marketplace 发布已解禁但仅手动执行,不自动发布)。
 - 捆绑 ffmpeg/sox 二进制((L)GPL 风险);webview 录音(权限不可靠,已评估否决)。
@@ -101,3 +113,5 @@
 **Phase C 平台覆盖**:Windows 实测(dshow + electron-builder win + SendInput 粘贴,社区优先);macOS 公证 + 自动更新 + 开机自启;Linux(pulse)最低优先级。
 
 **Phase D 开源护城河**:MCP server(语音输入暴露为 agent 工具);whisper.cpp 离线档;语音编辑指令(最低优先级)。
+
+**Phase E Mac 语音输入法产品化(2026-08-08 用户拍板开工并二次拍板转纯原生 SwiftUI;Electron 版 M-A 已落地=模块 J,随后整体迁移到 `macos/` 原生 App——四 Tab 设置窗口/词库三层/六步引导/录音管线/热键/粘贴均已原生实现,AVAudioEngine 取代 ffmpeg、AAC 上传走协议 v2 新字段 `audioFormat`;数据文件与钥匙串与 Electron 版完全同构,bundle id 沿用继承 TCC 授权;VAD 分段与流式转写已于同日移植完成(VadSegmenter/StreamingClient,批量重放兜底同 Electron 语义),原生 parity 仅剩 HUD/按住说话,之后议 Electron `desktop/` 退役)**:把 `desktop/` 从托盘工具升级为完整 Mac AI 语音输入法产品,对标 Typeless/Wispr Flow/Superwhisper。形态判断:全行业无人用 IMKit,「菜单栏 + 全局热键 + 文本插入」现有形态正确,补产品化五件套 —— 设置 App 窗口(四 Tab:首页统计历史/词库/风格/设置)、**三层大词库**(ASR 偏置 ≤40 动态选词 / 改写阶段发音相似度校正 / 本地确定性替换,容量目标 ≥5,000 条,收词管道 = HUD 一键收词 + 手改回学建议卡 + 通讯录导入)、录音 HUD(悬浮波形 + 流式 partial)、逐 App 排版场景规则(推断保底 + 用户覆盖,appCategory 底座已有)、Onboarding 向导(权限实测 + 练习场)。技术:留 Electron,Fn/按住说话需 uiohook 或 Swift helper。M-A~M-D 分期与竞品对照详见 **docs/05-MAC-VOICE-INPUT.md**。差异化 = 中文/中英混杂精度 + 中文长口述自动结构化排版(市场空白)+ 逐 App 规则(Typeless 用户第一需求且其没有)+ 开源可自托管。

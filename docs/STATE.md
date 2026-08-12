@@ -2,6 +2,45 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-12(**全面测试加固:Swift 24→46 例,自审揪出并修复 2 个实现 bug,CI 增 macOS job**;起因:用户要求新增各类测试用例、修复发现的 bug、保证未来可用性):
+  ① **自审发现并修复的 bug**:
+  - `applyReplacements` 循环替换实现缺陷:替换结果包含原词(如 vibefox→"VibeFox App")时只替换第一处就中断 → 改为 `replacingOccurrences` 单遍全量替换(与 TS 的 regex 全局替换语义一致,天然免疫自引用死循环);
+  - `UsageStats.dayKey` 的 DateFormatter 未锁定 locale/日历:用户系统若用佛历/和历,日期键会出 "2569-…" 且跨版本分裂同一天 → 锁 en_US_POSIX + gregorian。
+  ② **可测试性重构**:四个 Store 全部改为 `load(from:)/save(to:)` 目录参数注入(默认 AppPaths,App 侧零改动);ApiClient 构造注入 URLSessionConfiguration(mock URLProtocol 可拦截);HistoryStore 载入改逐行宽容解码(单行损坏不再拖垮整文件,与词库同策略)。
+  ③ **新增 22 例(46 全过)**:Store 四件套真实文件往返 + 损坏文件自愈;**Electron 格式互操作 fixture**(TS 写的 `lastUsedAt:null`/整数时间戳字典、history 数组含坏行——跨构建共享数据文件是契约不是巧合);TranscriptHistory(cap 50/空白丢弃/脏数据);UsageStats(累计/90 天裁剪/dayKey 公历);HotkeyManager.parse 正反例;FrontmostApp.categorize 对照 Electron 分类表;ApiClient 全错误码映射 + 请求携带 Bearer/audioFormat=m4a(serialized suite + mock URLProtocol);**VAD 确定性 fuzz**(LCG 种子,200 随机块:段长恒偶、≥minDuration、字节守恒不丢不造)。
+  ④ **CI 新增 `macos` job**(macos-15:swift build + swift test + `make-app.sh --skip-sign` 打包验证)——原生端从此有回归保护。
+  ⑤ 验证:四端全绿(client 19 / server 29 / desktop 构建 / Swift 46);冒烟改用**未打包 debug 二进制**(nil bundle id 豁免单实例守卫,不干扰用户实例)+ `$!` 精确 PID 清理,残留实例事故的流程修正落实。release 已重新打包(用户下次重启 App 生效)。
+- 2026-08-12(**"数据丢失"事故排查(实为残留测试实例)+ 单实例守卫 + HUD/按住说话落地(parity 里程碑 3 完成)**;起因:用户报告重启后词条与历史消失):
+  ① **事故定性:数据从未丢失**。磁盘取证:正式目录 dictionary.json(Careby/Elvis/WiseMum…)与 history.json(10 条)完好。真凶 = 上一轮冒烟测试**残留的进程**(`VIBEFOX_DATA_DIR` 指向 scratchpad 隔离目录,`ps eww` 实证)——冒烟清理用 `pgrep -f "build/VibeFox.app..." | head -1` 匹配到了**用户的正式实例**并误杀,留下环境变量覆盖的测试实例;用户后续面对的是这个"空数据"实例的 UI。**教训:后台冒烟实例必须用启动时记下的 `$!` 精确 kill,绝不能按共享路径 pgrep。**
+  ② **单实例守卫**(治本):`VibeFoxApp.init` 检查同 bundle id 已运行实例 → 激活既有实例并 `exit(0)`(Electron `requestSingleInstanceLock` 的原生等价物;未打包 dev 运行 bundle id 为 nil 豁免,不妨碍开发)。双实例的热键冲突/双图标/数据目录错乱一并杜绝。
+  ③ **按住说话 + Fn 键(`KeyMonitor.swift`)**:CGEventTap(defaultTap,命中热键吞掉按键不漏进前台应用;autorepeat 过滤;tapDisabledByTimeout 自动重启)提供真实 keyDown/keyUp——**轻按=开关,按住>350ms 松手即停**(对讲),比 Electron 的按键重复 hack 干净;支持裸 **Fn 键**(accelerator "Fn",native-only,设置页一键切换,需辅助功能权限);无权限时自动回落 Carbon 纯开关热键。
+  ④ **录音 HUD(`HudController.swift`)**:非激活 NSPanel(borderless+nonactivatingPanel,statusBar 层,忽略鼠标,**绝不抢焦点**),屏幕底部居中胶囊:红点+中心加权电平条+流式 partial 尾巴(18 字符)+ 转写中态;录音显示、会话结束隐藏。
+  ⑤ 验证:swift build 零告警、24 例全过、打包签名;正常 `open` 启动实测单实例+无环境变量覆盖。**待用户**:确认词条/历史回来了;真实录音验证按住说话、HUD、流式。**原生 parity 达成,Electron desktop/ 退役待用户拍板。**
+- 2026-08-08(**尾字"嗯"根因修复 + 原生 UI 打磨 + VAD/流式移植完成(parity 里程碑 2)**;起因:用户看引导截图提三点——UI 文字小/蓝字看不清、老版本"说完结尾多个嗯"、继续 parity):
+  ① **"嗯"根因(证据链完整)**:VAD 结尾段(呼吸/口腔杂音,设计上 ≥200ms 一律送 ASR 不做振幅丢弃)→ Qwen3-ASR 对近静音音频幻觉输出「嗯」→ `MIN_REWRITE_CHARS=10` 使 <10 字符**跳过改写**(clean 档的去填充词无法执行)→ `isNonSpeechTranscript` 不认识「嗯」→ 原样粘贴。**修复**:服务端 nonspeech.ts 新增 filler-only 检测(整句仅由 嗯/呃/啊/哦/um/uh/hmm 等填充 token + 标点构成 → 判非语音 502;≤30 字符限定),client/VibeController.ts 副本同步;正反用例 5+3(「嗯,好的,开始吧」「好嘛」不误杀)。server vitest 29 例。批量+流式(realtime.ts 复用同函数)+三客户端全部受益。原生版当时无 VAD 被改写档掩盖,rewriteMode:off 会复现——已一并根治。
+  ② **UI 打磨**:全局 tint 换品牌橙(修暗背景蓝字不可读);引导页 lead 文案升 .title3、info 卡升 .body、主按钮 .controlSize(.large)、步骤点改几何圆点;四 Tab 全部 .caption(10pt)→.callout(12pt),统计卡数字 27pt。
+  ③ **VAD 移植(`VadSegmenter.swift`,4 例测试)**:自适应阈值(500ms 校准窗、floor×2.5、clamp 2000、快降慢升 ×1.02)与 **2 字节采样对齐切分**(2026-07-12 金属噪音事故的红线)逐行对齐 TS 版;段峰值跟踪;`drainTrailing` ≥200ms。AudioRecorder 新增 `onPcmChunk`(内部串行队列保序)+ `drainPendingChunks()`(stop 后排空,避免 drainTrailing 竞态)。
+  ④ **流式移植(`StreamingClient.swift`)**:URLSessionWebSocketTask + `["vibefox.v1", licenseKey]` 子协议(key 绝不进 URL);start/binary-PCM/finish 上行,ready/partial/segment/done/error 下行,与 TS 客户端帧格式逐一对齐;握手前音频缓冲;事件主线程投递。
+  ⑤ **AppModel 三路径重构**:流式(chunk 双写:WS 上行 + PcmBuffer 兜底;失败静默降级,stop 时 10s flush 超时 → 整段缓冲重放批量端点,dedupe 裁重)/ VAD 分段(chunk 队列上切分 → MainActor 串行 segmentQueue 保口述顺序)/ 整段(原路径);`deliverFinalText` 抽为共享交付尾(L3 替换→dedupe→词库计数→历史→粘贴);段错误累积会话结束一条汇总;`partialText` 发布(首页实时尾巴,HUD 待做);风格页流式开关启用。辅助类 AtomicFlag/PcmBuffer(锁保护跨线程)/MainSignal(主 actor 轮询信号)。
+  ⑥ **验证**:swift build 零告警;Swift Testing 24 例全过;make-app.sh 签名打包;隔离目录冒烟存活。**流式/VAD 需真实录音端到端验证(用户)**。
+  **下一步(任务 #11)**:录音 HUD(非激活 NSPanel 波形+partial+收词气泡)、按住说话/Fn(CGEventTap);之后议 Electron desktop/ 退役。
+- 2026-08-08(**转纯原生 SwiftUI:`macos/` 全新原生 App 落地**;起因:用户看到 Electron 版 M-A 后表示"想做成独立 UI 而不是 web",经选项确认拍板纯原生重写):
+  ① **协议 v2 新增 `audioFormat`**(mp3|m4a|wav,默认 mp3,未知值静默回落不 400):macOS 无 MP3 编码器,原生端上传 32kbps AAC/m4a(64k 超出 16kHz 单声道 AAC 允许区间,实测被编码器拒);仅影响 Qwen data-URI MIME 映射(`AUDIO_MIME`),Whisper 收 base64 自动嗅探不受影响。server vitest 27 例(新增 transcribe.test.ts 3 例)。
+  ② **`macos/` Swift Package**(SPM 无 Xcode 工程,VibeFoxCore 库 + VibeFox 可执行 + Swift Testing;`scripts/make-app.sh` = swift build release → 组装 .app → **Developer ID 签名实测通过**;Info.plist 沿用 bundle id `com.vibefox.desktop` 继承 TCC 授权;LSUIElement;entitlements 只带 audio-input)。
+  ③ **Core 移植(20 例 Swift Testing 全过,与 TS 测试用例镜像)**:AppConfig(**同一 config.json schema**,逐字段宽容解码+保留 hotkey 迁移/zh→auto/上限钳制,`VIBEFOX_DATA_DIR` 环境变量可隔离数据目录)、UserDictionary(词条/替换/L1 选词/L3 替换/回学计数,**同一 dictionary.json**;Failable 包装保证坏条目不拖垮整文件)、TranscriptHistory/UsageStats/TranscriptDedupe 同构移植、KeychainStore(SecItem 读同一 generic password service=VibeFox/account=license,Electron 写入的 key 直接可读,首读可能弹一次钥匙串确认)。
+  ④ **原生服务**:AudioRecorder(AVAudioEngine tap → AVAudioConverter 16k 单声道 PCM16,NSLock 保护,电平/峰值;**ffmpeg 依赖清零**)、AacEncoder(AVAudioFile → m4a,含正弦波编码测试)、ApiClient(URLSession 协议 v2,401/403/413/429/502=noSpeech/5xx 映射)、PasteService(CGEvent ⌘V + 剪贴板恢复,AX 检测;**不再走 AppleScript**)、FrontmostApp(NSWorkspace 取 bundle id,分类表逐条移植)、HotkeyManager(Carbon RegisterEventHotKey,解析 Electron accelerator 字符串保持 config 跨实现兼容,checkAvailable 试注册)。
+  ⑤ **SwiftUI UI**:MenuBarExtra(图标随 phase 变化,label .task 作为启动钩子)+ 手管 NSWindow 设置窗口(MenuBarExtra-only App 的 Window scene 无法在启动时程序化打开);四 Tab(首页统计卡+历史搜索复制/词库 CRUD+替换+导入导出/风格改写卡+语言地区/设置 热键捕获 NSEvent monitor+凭据+录音参数+麦克风实测+权限)+ 六步 Onboarding(与 Electron 版同流程;练习场在未授权 AX 时经 lastDelivered 直填)。AppModel = @MainActor controller(会话状态机/词库 L1 选词+L3 替换+回学/统计/历史,与 Electron main.ts 同策略)。流式开关 UI 置灰标注"原生版开发中"。
+  ⑥ **验证**:swift build 零告警;20 例测试全过;make-app.sh 签名验证过;隔离数据目录冒烟启动存活、config.json 按 Electron schema 落盘、日志零输出。computer-use 截图验证受索引限制未做(与 2026-07-18 同一环境限制),**待用户肉眼过一遍 UI**。
+  ⑦ **未做(排期 M-2)**:VAD 分段(现为整段录音批量转写,maxRecordSeconds 上限)、流式 WS、录音 HUD、按住说话/Fn、CI 加 macos job、图标 icns、公证。**Electron desktop/ 保留至 parity 后再议退役。**
+- 2026-08-08(**Mac 语音输入法产品化 Phase E 立项 + M-A 落地**;起因:用户先要求对标 Typeless 调研做"iOS 输入法",澄清后改为 Mac 端,拍板开工并将开源):
+  ① **调研与方案**:三路并行调研(Typeless 深挖/六竞品横评含讯飞豆包/iOS 键盘扩展可行性)沉淀为 docs/05-MAC-VOICE-INPUT.md;关键结论 = 业界无人用 IMKit、现有「菜单栏+热键+粘贴」形态正确,差距在产品化外壳;iOS 结论(键盘扩展不可直录音、容器 App 保活是业界标准)留档于该文档尾注。PRD §4 新增 Phase E。
+  ② **M-A 设置窗口 + 词库落地**:
+  - **共享 Model `client/src/models/UserDictionary.ts`**(纯函数,vitest 7 例):词条{word/aliases/source(manual|learned✨|contacts👤)/hits/lastUsedAt} + 替换规则;L1 `selectAsrKeywords(40)`(打分=recency+hits×1天权重,词库可放 1 万条、每次只送 40 词,isContextEcho 红线不动);L3 `applyReplacements`(本地字面替换,最长优先、大小写可选、`$` 安全);import/export 合并去重。
+  - **desktop 新增**:`dictionaryStore.ts`/`statsStore.ts`(dictionary.json/stats.json,90 天按日统计);`ipc.ts` 类型化 IPC 契约(单 invoke 通道+事件广播);`settingsWindow.ts`(BrowserWindow 宿主,contextIsolation+preload contextBridge);`ui/settings.html+settings.ts`(无框架渲染层,四 Tab:首页统计+历史搜索复制/词库 CRUD+替换+导入导出/风格 radio 卡+语言地区+流式/设置 热键捕获+凭据+录音+权限;深浅色自适应)。
+  - **Onboarding 六步向导**(首启自动、可重跑):欢迎→麦克风授权+getUserMedia 实测电平条→辅助功能(1.5s 轮询自动打勾,明示"重启后生效")→热键试按(phase 事件驱动✓)→练习场(3 条预置句:纯中文/中英混杂/口述列表;未授权辅助功能时 delivered 事件直接插 textarea 兜底)→就绪页。
+  - **管线接入**:`buildSessionKeywords()` 会话级构建(词库优先、config.vocabulary 补位、≤40 去重);处理段先 `applyReplacements` 再 dedupe;`recordUsage` 命中计数驱动 L1 排序,会话结束落盘;统计在 finishSession 记录。热键变更走 checkHotkey 试注册(RESERVED_HOTKEYS 拒绝)+ 失败回滚。config 新增 `onboardingDone`。
+  ③ **验证**:三端 typecheck+esbuild 全绿;vitest 43 例全过(client 19 + server 24);DoD 全清单绿(分层 grep/互引/密钥/权威数值/.mcp.json);隔离 userData 冒烟启动 8s 存活、config.json 生成;渲染层用 mock-bridge 测试台在浏览器真实加载 dist/settings.js 逐 Tab 实测(四 Tab 渲染、添加词条+toast、向导六步导航、完成隐藏,零 console 错误)。
+  **待办(M-A 收尾需用户)**:真机打开 VibeFox.app 走一遍向导与词库(`npm run dist` 重打包后);**M-B/M-C 排期**:录音 HUD、uiohook 按住说话/Fn、L2 发音相似度校正层、手改回学建议收件箱、通讯录导入、逐 App 覆盖表(见 docs/05 §7)。
 - 2026-07-23(**流式零配置化 + 双端凭据管理 UI**;起因:用户问"新加坡区 id 我以前没给过吗"并要求 UI 里能维护 key/id):
   ① **核实**:`wrangler secret list` 确认线上只有 `ANTHROPIC_API_KEY`(废弃)/`DASHSCOPE_API_KEY_APAC`/`DASHSCOPE_API_KEY_US` —— workspace id **确实从未提供过**,是 M1 新引入的需求。复查官方文档后发现旧共享域名 `dashscope-intl.aliyuncs.com` 仍可用、per-workspace 域名只是推荐,遂**把 workspace id 降级为可选**:`realtimeUpstreamUrl(undefined)` 回落共享域名 + 配了则附 `X-DashScope-WorkSpace` 头;503 判据从"缺 workspace id 或 key"改为"缺 key"。**结果:流式转写对用户零额外配置**,复用既有 APAC key。新增 2 例测试。
   ② **扩展端凭据管理**(`vibefox.manageCredentials`):QuickPick 一屏显示 License Key + Groq/OpenAI/阿里云三把 provider key 的已设置状态(只显示状态不显示明文)、任选一项设置/清除(旧 setApiKey 只能改**当前** provider 的 key,这是能力补齐),外加 endpoint 跳转项与"服务端密钥不在客户端维护"的说明。
