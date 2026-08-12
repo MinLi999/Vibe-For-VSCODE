@@ -14,6 +14,11 @@ desktop/release/
 macos/.build/
 macos/build/
 
+# Downloaded Sparkle CLI tools (generate_keys/sign_update/generate_appcast) — local dev
+# cache, not source we own; re-download via docs/SPARKLE.md. Never contains the private key
+# (Sparkle stores that in the login Keychain, not on disk).
+macos/tools/
+
 # Cloudflare / Wrangler
 server/.wrangler/
 server/.dev.vars
