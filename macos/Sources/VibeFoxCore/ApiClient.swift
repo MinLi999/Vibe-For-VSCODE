@@ -35,6 +35,9 @@ public struct TranscribeResult: Decodable {
     public var tier: String
     public var engines: Engines
     public var timings: Timings
+    /// Downgrade reason codes when a server-side engine fell back (e.g. "dashscope_timeout",
+    /// "dashscope_empty_result") — the key evidence when hunting intermittent quality drops.
+    public var fallback: Fallback?
 
     public struct Engines: Decodable {
         public var asr: String
@@ -43,6 +46,11 @@ public struct TranscribeResult: Decodable {
 
     public struct Timings: Decodable {
         public var total_ms: Int
+    }
+
+    public struct Fallback: Decodable {
+        public var asr: String?
+        public var rewrite: String?
     }
 }
 

@@ -184,6 +184,26 @@ struct SettingsTabView: View {
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("诊断").font(.headline)
+                            Text("每段转写的完整生命周期,只记长度/引擎/耗时/原因码,不含任何转写内容")
+                                .font(.callout).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("复制诊断日志") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(model.diagnostics.exportText(), forType: .string)
+                            }
+                            Button("清空", role: .destructive) { model.clearDiagnostics() }
+                        }
+                        Text("排查「说了话却没有输出」:看 no_speech 事件的 peak 值——peak 高(>1000)说明麦克风录到了声音但引擎没识别出来(引擎侧问题);peak 低说明采集阶段就没收到人声(麦克风/增益问题)。")
+                            .font(.callout).foregroundStyle(.secondary)
+                        DiagnosticsListView()
+                    }
+                    .padding(6)
+                }
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("关于 VibeFox").font(.headline)
                         HStack(spacing: 12) {
                             Link("官网 vibefox.app", destination: URL(string: "https://vibefox.app")!)
@@ -305,6 +325,44 @@ struct SettingsTabView: View {
         micRecorder = nil
         micTesting = false
         micLevel = 0
+    }
+}
+
+/// Most-recent diagnostic events, newest first. Reads model.diagRevision so SwiftUI re-renders
+/// on every new event (DiagnosticsLog itself is not observable by design — it's shared with
+/// non-UI code paths).
+struct DiagnosticsListView: View {
+    @EnvironmentObject private var model: AppModel
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    var body: some View {
+        let _ = model.diagRevision // Dependency anchor: re-render when a new event lands.
+        let events = model.diagnostics.recent(14).reversed()
+        if events.isEmpty {
+            Text("(暂无记录——录一段音后这里会出现每一步的痕迹)")
+                .font(.callout).foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(events)) { event in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(Self.timeFormatter.string(from: Date(timeIntervalSince1970: event.at / 1000)))
+                            .font(.caption.monospaced()).foregroundStyle(.tertiary)
+                        Text(event.kind)
+                            .font(.caption.monospaced().bold())
+                            .foregroundStyle(event.kind.contains("error") || event.kind == "no_speech" ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        Text(event.detail)
+                            .font(.caption.monospaced()).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
     }
 }
 

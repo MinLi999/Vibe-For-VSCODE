@@ -59,7 +59,23 @@ final class AppModel: ObservableObject {
     private let streamingPcm = PcmBuffer()
     private var streamingDone = MainSignal()
 
+    /// Local-only, content-free segment lifecycle log (see DiagnosticsLog). `diagRevision`
+    /// only exists to poke SwiftUI when a new event lands.
+    let diagnostics = DiagnosticsLog(fileURL: AppPaths.userDataDir.appendingPathComponent("diagnostics.log"))
+    @Published private(set) var diagRevision = 0
+
     let settingsWindow = SettingsWindowController()
+
+    /// All logging funnels through here so every event also refreshes the settings UI.
+    private func diag(_ kind: String, _ detail: String) {
+        diagnostics.log(kind, detail)
+        diagRevision &+= 1
+    }
+
+    func clearDiagnostics() {
+        diagnostics.clear()
+        diagRevision &+= 1
+    }
 
     init() {
         config = ConfigStore.load()
@@ -324,6 +340,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        diag("session_start", "provider=\(config.apiProvider) streaming=\(streamingClient != nil) vad=\(vad != nil) keywords=\(sessionKeywords.count)")
         phase = .recording
         hud.show(model: self)
         levelTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -376,6 +393,7 @@ final class AppModel: ObservableObject {
         phase = .idle
         inputLevel = 0
         hud.hide()
+        diag("session_cancelled", "")
     }
 
     private func stopAndFinish() async {
@@ -484,6 +502,7 @@ final class AppModel: ObservableObject {
 
     /// Serializes segment transcription+paste so multi-segment sessions land in spoken order.
     private func enqueueSegment(pcm: Data, peak: Int) {
+        diag("segment_queued", "bytes=\(pcm.count) ms=\(pcm.count / 32) peak=\(peak)")
         let previous = segmentQueue
         segmentQueue = Task { [weak self] in
             await previous?.value
@@ -492,7 +511,10 @@ final class AppModel: ObservableObject {
     }
 
     private func processSegment(pcm: Data, peak: Int) async {
-        guard pcm.count >= 6400 else { return } // Under ~0.2s cannot contain speech.
+        guard pcm.count >= 6400 else { // Under ~0.2s cannot contain speech.
+            diag("segment_too_short", "bytes=\(pcm.count) ms=\(pcm.count / 32)")
+            return
+        }
         do {
             let finalText = config.apiProvider == "cloudflare"
                 ? try await transcribeViaWorker(pcm: pcm, peak: peak)
@@ -501,13 +523,20 @@ final class AppModel: ObservableObject {
         } catch let error as ApiError {
             switch error {
             case .noSpeech:
-                return // Inter-sentence silence gaps legitimately transcribe to nothing.
+                // A silence gap transcribing to nothing is normal — but when the CAPTURE PEAK
+                // was high, this is the "I spoke but nothing appeared" field report: real audio
+                // that both engines read as empty. peak splits capture bugs from engine bugs.
+                diag("no_speech", "peak=\(peak) bytes=\(pcm.count) ms=\(pcm.count / 32)")
+                return
             case .unauthorized:
+                diag("segment_error", "unauthorized")
                 notify(error.localizedDescription)
             default:
+                diag("segment_error", String(error.localizedDescription.prefix(120)))
                 sessionErrors.append(error.localizedDescription)
             }
         } catch {
+            diag("segment_error", String(error.localizedDescription.prefix(120)))
             sessionErrors.append(error.localizedDescription)
         }
     }
@@ -532,6 +561,13 @@ final class AppModel: ObservableObject {
                 appCategory: sessionAppCategory
             )
         )
+        var fallbackNote = ""
+        if let fallback = result.fallback {
+            if let asr = fallback.asr { fallbackNote += " asr_fallback=\(asr)" }
+            if let rewrite = fallback.rewrite { fallbackNote += " rewrite_fallback=\(rewrite)" }
+        }
+        diag("worker_ok", "asr=\(result.engines.asr) rewrite=\(result.engines.rewrite) total_ms=\(result.timings.total_ms)"
+            + " raw_len=\(result.rawText.count) final_len=\(result.finalText.count)\(fallbackNote)")
         return result.finalText
     }
 
@@ -572,19 +608,28 @@ final class AppModel: ObservableObject {
         // hallucinations, filler-only utterances, and the context-vocabulary-echo failure
         // mode (2026-07-12 incident) — all providers pass keywords into their ASR call
         // (Qwen3-ASR's system message, Whisper's prompt field), so all are equally exposed.
-        guard !rawText.isEmpty, !NonSpeechFilter.isNonSpeechTranscript(rawText), !NonSpeechFilter.isContextEcho(rawText, contextWords: sessionKeywords) else {
+        guard !rawText.isEmpty, !NonSpeechFilter.isNonSpeechTranscript(rawText) else {
+            diag("byok_filtered", "reason=nonspeech raw_len=\(rawText.count)")
+            throw ApiError.noSpeech
+        }
+        guard !NonSpeechFilter.isContextEcho(rawText, contextWords: sessionKeywords) else {
+            diag("byok_filtered", "reason=context_echo raw_len=\(rawText.count)")
             throw ApiError.noSpeech
         }
 
         guard config.rewriteMode != "off", rawText.trimmingCharacters(in: .whitespacesAndNewlines).count >= RewritePrompts.minRewriteChars,
               let baseURL = DirectProviderClient.chatBaseURL(for: provider, customEndpoint: config.customEndpoint) else {
+            diag("byok_ok", "provider=\(provider) raw_len=\(rawText.count) rewrite=skipped")
             return rawText
         }
         let apiKey = (try? requireProviderKey(provider)) ?? ""
         let model = config.llmCorrectionModel.isEmpty ? DirectProviderClient.defaultRewriteModel(for: provider) : config.llmCorrectionModel
         let systemPrompt = RewritePrompts.systemPrompt(rewriteMode: config.rewriteMode, chineseVariant: config.chineseVariant, appCategory: sessionAppCategory)
         let userMessage = RewritePrompts.buildUserMessage(rawText: rawText, keywords: sessionKeywords, projectContext: config.projectContext)
-        return await directProvider.rewrite(baseURL: baseURL, apiKey: apiKey, model: model, userMessage: userMessage, systemPrompt: systemPrompt, fallbackText: rawText)
+        let finalText = await directProvider.rewrite(baseURL: baseURL, apiKey: apiKey, model: model, userMessage: userMessage, systemPrompt: systemPrompt, fallbackText: rawText)
+        diag("byok_ok", "provider=\(provider) model=\(model) raw_len=\(rawText.count) final_len=\(finalText.count)"
+            + (finalText == rawText ? " rewrite=fell_back" : ""))
+        return finalText
     }
 
     private func requireProviderKey(_ provider: String) throws -> String {
@@ -610,7 +655,10 @@ final class AppModel: ObservableObject {
     private func deliverFinalText(_ text: String) async {
         let replaced = dictionary.applyReplacements(text)
         let finalText = dedupeAgainstSession(sessionTranscript, replaced)
-        guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            diag("dedupe_dropped", "len=\(replaced.count)") // Whole segment was a session echo.
+            return
+        }
         sessionTranscript = (sessionTranscript + " " + finalText).trimmingCharacters(in: .whitespaces)
         sessionChars += finalText.count
         if dictionary.recordUsage(finalText) {
@@ -621,6 +669,7 @@ final class AppModel: ObservableObject {
         HistoryStore.save(history)
         await PasteService.deliver(finalText, restoreClipboard: accessibilityTrusted && config.restoreClipboard)
         lastDelivered = finalText
+        diag("delivered", "chars=\(finalText.count) paste=\(accessibilityTrusted ? "auto" : "clipboard_only")")
         if !accessibilityTrusted {
             notify("转写已复制到剪贴板(未授权辅助功能,自动粘贴不可用)。可直接 ⌘V;去设置窗口「设置」页授权后重启 VibeFox。")
         }
@@ -642,6 +691,7 @@ final class AppModel: ObservableObject {
             let unique = Array(Set(sessionErrors))
             notify("本次录音有 \(sessionErrors.count) 段转写失败 —— \(unique[0])")
         }
+        diag("session_end", "chars=\(sessionChars) errors=\(sessionErrors.count)")
     }
 
     private func clearSessionTimers() {
