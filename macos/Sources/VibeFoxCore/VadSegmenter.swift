@@ -29,6 +29,12 @@ public final class VadSegmenter: @unchecked Sendable {
     static let calibrationWindowMs: Double = 500
     /// Trailing audio shorter than this at stop time cannot contain speech.
     public static let minTrailingMs: Double = 200
+    /// Hard segment ceiling — split even with no silence gap in sight. Without this, someone
+    /// speaking continuously (pauses under silenceMs) buffers the WHOLE take until they stop:
+    /// no text appears for a minute, and the resulting giant single request is exactly what
+    /// used to blow the ASR timeout and vanish into a silent 502. 20s keeps every segment
+    /// comfortably inside the engines' fast path and gives steady feedback while talking.
+    public static let maxSegmentMs: Double = 20_000
 
     private let silenceMs: Double
     private let minDurationMs: Double
@@ -71,6 +77,18 @@ public final class VadSegmenter: @unchecked Sendable {
             silentTimeMs += durationMs
         } else {
             silentTimeMs = 0
+        }
+
+        // Continuous-speech escape hatch: cut at the ceiling even mid-sentence. A slightly
+        // awkward split beats a minute of silence followed by one oversized request.
+        if Double(buffer.count) >= Self.maxSegmentMs * Self.bytesPerMs {
+            let cut = Int(Self.maxSegmentMs * Self.bytesPerMs) / 2 * 2
+            let segmentPcm = buffer.prefix(cut)
+            buffer = Data(buffer.suffix(from: cut))
+            silentTimeMs = 0
+            let peak = segmentPeak
+            segmentPeak = 0
+            return Segment(pcm: Data(segmentPcm), peak: peak)
         }
 
         guard silentTimeMs >= silenceMs else { return nil }

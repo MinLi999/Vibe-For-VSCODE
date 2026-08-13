@@ -72,6 +72,16 @@ struct MenuContentView: View {
 
         Text("热键:\(model.config.hotkey)")
 
+        if model.inFlightSegments > 0 {
+            Text("正在转写 \(model.inFlightSegments) 段…")
+        }
+        if model.pendingCount > 0 {
+            Text("⚠️ \(model.pendingCount) 段未转写成功(录音已保留)")
+            Button("打开设置重试…") {
+                model.settingsWindow.show(model: model)
+            }
+        }
+
         Divider()
 
         Button("检查更新…") {

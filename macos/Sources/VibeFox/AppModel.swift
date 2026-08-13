@@ -64,6 +64,12 @@ final class AppModel: ObservableObject {
     let diagnostics = DiagnosticsLog(fileURL: AppPaths.userDataDir.appendingPathComponent("diagnostics.log"))
     @Published private(set) var diagRevision = 0
 
+    /// Failed segments' audio, kept so a lost utterance can be retried instead of vanishing.
+    let pendingAudio = PendingAudioStore(userDataDir: AppPaths.userDataDir)
+    @Published private(set) var pendingCount = 0
+    /// Segments still in flight — drives the "还在转写上一段" HUD/menu hint.
+    @Published private(set) var inFlightSegments = 0
+
     let settingsWindow = SettingsWindowController()
 
     /// All logging funnels through here so every event also refreshes the settings UI.
@@ -75,6 +81,49 @@ final class AppModel: ObservableObject {
     func clearDiagnostics() {
         diagnostics.clear()
         diagRevision &+= 1
+    }
+
+    func clearPendingAudio() {
+        pendingAudio.clear()
+        pendingCount = 0
+    }
+
+    /// Manual retry from the settings window for a take that auto-retry couldn't rescue.
+    func retryPending(_ entry: PendingAudio) {
+        guard let audio = pendingAudio.audio(for: entry) else {
+            pendingAudio.remove(entry)
+            pendingCount = pendingAudio.count
+            return
+        }
+        diag("pending_retry_manual", "age_ms=\(Int(Date().timeIntervalSince1970 * 1000 - entry.at)) attempts=\(entry.attempts)")
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let text = try await self.transcribeEncoded(audio: audio, peak: entry.peak)
+                await self.deliverFinalText(text)
+                self.pendingAudio.remove(entry)
+                self.pendingCount = self.pendingAudio.count
+                self.diag("pending_retry_ok", "chars=\(text.count)")
+            } catch {
+                self.pendingAudio.markAttempt(entry, error: Self.reasonCode(error))
+                self.pendingCount = self.pendingAudio.count
+                self.diag("pending_retry_failed", Self.reasonCode(error))
+            }
+        }
+    }
+
+    /// Short machine-readable code for diagnostics/pending-entry display.
+    static func reasonCode(_ error: Error) -> String {
+        guard let apiError = error as? ApiError else { return "unknown" }
+        switch apiError {
+        case .unauthorized: return "unauthorized"
+        case .payloadTooLarge: return "payload_too_large"
+        case .rateLimited: return "rate_limited"
+        case .noSpeech: return "no_speech"
+        case .timeout: return "timeout"
+        case .network: return "network"
+        case .server(let status, _): return "server_\(status)"
+        }
     }
 
     init() {
@@ -510,47 +559,94 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Was this failure worth another shot with the same audio? Auth/payload/no-speech-on-quiet
+    /// audio won't改善 by retrying; timeouts, network blips, rate limits and server errors will.
+    private static func isRetryable(_ error: Error, peak: Int) -> Bool {
+        guard let apiError = error as? ApiError else { return false }
+        switch apiError {
+        case .timeout, .network, .rateLimited, .server:
+            return true
+        case .noSpeech:
+            // Real audio the engines read as empty — the exact failure this whole safety net
+            // exists for. Quiet audio (low peak) really was silence; don't burn a retry.
+            return peak > 1000
+        case .unauthorized, .payloadTooLarge:
+            return false
+        }
+    }
+
     private func processSegment(pcm: Data, peak: Int) async {
         guard pcm.count >= 6400 else { // Under ~0.2s cannot contain speech.
             diag("segment_too_short", "bytes=\(pcm.count) ms=\(pcm.count / 32)")
             return
         }
+        inFlightSegments += 1
+        defer { inFlightSegments -= 1 }
+
+        let durationMs = pcm.count / 32
+        let encoded: Data
         do {
-            let finalText = config.apiProvider == "cloudflare"
-                ? try await transcribeViaWorker(pcm: pcm, peak: peak)
-                : try await transcribeViaDirectProvider(pcm: pcm)
-            await deliverFinalText(finalText)
-        } catch let error as ApiError {
-            switch error {
-            case .noSpeech:
-                // A silence gap transcribing to nothing is normal — but when the CAPTURE PEAK
-                // was high, this is the "I spoke but nothing appeared" field report: real audio
-                // that both engines read as empty. peak splits capture bugs from engine bugs.
-                diag("no_speech", "peak=\(peak) bytes=\(pcm.count) ms=\(pcm.count / 32)")
-                return
-            case .unauthorized:
-                diag("segment_error", "unauthorized")
-                notify(error.localizedDescription)
-            default:
-                diag("segment_error", String(error.localizedDescription.prefix(120)))
-                sessionErrors.append(error.localizedDescription)
-            }
+            encoded = try AacEncoder.encodeToM4A(pcm16: pcm)
         } catch {
-            diag("segment_error", String(error.localizedDescription.prefix(120)))
+            diag("encode_failed", String(error.localizedDescription.prefix(120)))
             sessionErrors.append(error.localizedDescription)
+            return
+        }
+
+        do {
+            let finalText = try await transcribeEncoded(audio: encoded, peak: peak)
+            await deliverFinalText(finalText)
+            return
+        } catch {
+            let reason = Self.reasonCode(error)
+            diag(reason == "no_speech" ? "no_speech" : "segment_error", "reason=\(reason) peak=\(peak) ms=\(durationMs)")
+
+            if case ApiError.unauthorized = error {
+                notify(error.localizedDescription)
+                return
+            }
+            guard Self.isRetryable(error, peak: peak) else {
+                if reason != "no_speech" { sessionErrors.append(error.localizedDescription) }
+                return
+            }
+
+            // One automatic retry with the SAME audio — a transient timeout or a degenerate
+            // engine result usually succeeds the second time.
+            diag("segment_retry", "reason=\(reason) peak=\(peak) ms=\(durationMs)")
+            do {
+                let finalText = try await transcribeEncoded(audio: encoded, peak: peak)
+                await deliverFinalText(finalText)
+                diag("segment_retry_ok", "ms=\(durationMs)")
+                return
+            } catch {
+                // Still lost. Keep the recording so the user can retry it by hand instead of
+                // having spoken into the void — this is the whole point of PendingAudioStore.
+                let retryReason = Self.reasonCode(error)
+                pendingAudio.add(audio: encoded, durationMs: durationMs, peak: peak, error: retryReason)
+                pendingCount = pendingAudio.count
+                diag("segment_pending", "reason=\(retryReason) peak=\(peak) ms=\(durationMs) pending=\(pendingCount)")
+                sessionErrors.append("这段语音未能转写(已保留录音,可在设置页重试)")
+            }
         }
     }
 
-    private func transcribeViaWorker(pcm: Data, peak: Int) async throws -> String {
+    /// Shared transcription entry point for a already-encoded m4a segment: routes to the
+    /// Worker or a direct BYOK provider. Used by the live path AND by retries.
+    private func transcribeEncoded(audio: Data, peak: Int) async throws -> String {
+        config.apiProvider == "cloudflare"
+            ? try await transcribeViaWorker(audio: audio, peak: peak)
+            : try await transcribeViaDirectProvider(audio: audio)
+    }
+
+    private func transcribeViaWorker(audio: Data, peak: Int) async throws -> String {
         guard let licenseKey = KeychainStore.getLicenseKey() else {
             throw ApiError.unauthorized
         }
-        let m4a = try AacEncoder.encodeToM4A(pcm16: pcm)
         let result = try await api.transcribe(
             endpoint: config.endpoint,
             licenseKey: licenseKey,
             request: TranscribeRequest(
-                audio: m4a.base64EncodedString(),
+                audio: audio.base64EncodedString(),
                 language: config.language,
                 keywords: sessionKeywords,
                 projectContext: config.projectContext.isEmpty ? nil : config.projectContext,
@@ -579,9 +675,8 @@ final class AppModel: ObservableObject {
     /// ASR → isContextEcho/isNonSpeechTranscript guard → MIN_REWRITE_CHARS gate → rewrite
     /// with the real server-owned prompts (safe to ship — see RewritePrompts.swift). No
     /// fallback to a weaker engine on failure; errors surface directly to the user.
-    private func transcribeViaDirectProvider(pcm: Data) async throws -> String {
-        let m4a = try AacEncoder.encodeToM4A(pcm16: pcm)
-        let audioBase64 = m4a.base64EncodedString()
+    private func transcribeViaDirectProvider(audio: Data) async throws -> String {
+        let audioBase64 = audio.base64EncodedString()
         let provider = config.apiProvider
 
         let rawText: String
