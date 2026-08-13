@@ -2,6 +2,11 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**首次真实公证通过 + 深层签名遗漏修复**;起因:用户完成开发者协议重签(此前 403 系账号级法律协议过期,与代码/证书无关)+ 跑通 `generate_keys` 拿到 Sparkle 公钥后,`make-app.sh --notarize` 首次真跑,Apple 返回 `Invalid`):
+  ① **根因**:`notarytool log` 显示 `Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater`(x86_64+arm64)"未用有效 Developer ID 签名"+"签名缺安全时间戳"——Sparkle 框架内有一个此前遗漏枚举的**嵌套 Updater.app**(此前只签了 Downloader.xpc/Installer.xpc/Autoupdate/框架本身四项,漏了这个)。用 `find ... -perm -u+x` 枚举框架内全部 Mach-O 二次核实,确认共 5 个可执行文件、此前只签了 4 个。
+  ② **修复**:`make-app.sh` 补上 `Updater.app` 签名(嵌套 app bundle,按"内层先签、外层框架最后签封印整棵树"的深签名顺序插入);全部 codesign 调用加显式 `--timestamp`(不再只依赖 `--options runtime` 隐式生成安全时间戳——这次失败的第二个错误"缺安全时间戳"就是隐式路径没生效的证据);新增**本地预检**:签名后立即枚举 App 内所有 Mach-O 二进制,逐个 grep `codesign -dvvv` 输出确认「Developer ID Application 签名」+「Timestamp=」都在,任一缺失直接在本机 `exit 1`——以后再有遗漏在提交 Apple 公证服务器(几分钟一次round trip)之前就能拦下,不用每次靠云端拒绝来发现。
+  ③ **验证**:重跑 `--notarize`,Apple 返回 `status: Accepted`、`staple and validate action worked`;`spctl -a -vvv --type execute` 确认 `accepted`,`source=Notarized Developer ID`;`stapler validate` 通过。**这是本项目第一个完整走通签名→公证→staple 全链路的构建产物**,离线首次打开不再被 Gatekeeper 拦截。
+  **待办**:等用户网站上线后把这次生成的 appcast `<item>` 粘进 `macos/appcast.xml` 并上传 `VibeFox.zip` 到 `vibefox.app/releases/`,发布闭环即完成。
 - 2026-08-12(**钥匙串弹窗根治 + 版权去真名 + Sparkle 自动更新全链路落地**;起因:用户截图问钥匙串权限弹窗如何消除、要求版权改成「VibeFox.app」不用真名、按 Obsidian 笔记 `Sparkle-and-Notarization-Pitfalls` 把公证与自动更新做完整、网站用户自建暂不接入):
   ① **钥匙串弹窗根治**(`KeychainStore.reclaimOwnership`):Electron 时代用 `security` CLI 创建的条目不在原生 App 的访问名单,每次读取都问;首次成功读取后一次性 delete+add 重建条目(创建者自动进 ACL),`UserDefaults` 标记只做一次。新用户全新安装从第一天起就是自己创建自己读取,天然不会弹。
   ② **版权去真名**:四处「© 2026 Min Li」改「© 2026 VibeFox.app」(两份 README 许可证段、Info.plist NSHumanReadableCopyright、设置窗口关于面板);`Min Li (CFA9WX4496)` 作为 Developer ID 证书身份(codesign 签名标识,Apple 要求真实法律姓名)与 STATE.md/handoff.md 里的历史技术记录**不算版权声明**,未改动。
