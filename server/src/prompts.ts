@@ -86,6 +86,21 @@ export function withAppTone(systemPrompt: string, category: AppCategory | undefi
  * previousTranscript was removed entirely: despite the "禁止重复输出" instruction, models
  * occasionally re-emitted it, duplicating already-inserted sentences in the user's chat.
  */
+/**
+ * ⚠️ COST-CRITICAL ORDERING — DO NOT put varying content before stable content.
+ *
+ * DashScope's implicit context cache is PREFIX-matched and bills a hit at 20% of the input
+ * price. The fixed prefix here (system prompt + keywords + projectContext ≈ 1571 tokens) is
+ * ~88% of every rewrite request, and `keywords` is built once per recording session, so
+ * consecutive VAD segments share a byte-identical prefix and only `rawText` differs.
+ * Moving rawText (or anything per-request) earlier would break the shared prefix and raise
+ * the rewrite bill by roughly 30% — silently.
+ *
+ * Guards, in order of strength:
+ *   1. prompts.test.ts asserts the shared-prefix property directly (fails the build).
+ *   2. index.ts logs `cache=<cached>/<input>` per request (fails visibly in production).
+ *   3. This comment (fails only if someone reads it).
+ */
 export function buildRewriteUserMessage(rawText: string, keywords: string[], projectContext?: string): string {
   const parts: string[] = [];
   if (keywords.length > 0) {

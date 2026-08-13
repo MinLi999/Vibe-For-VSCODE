@@ -10,8 +10,18 @@ export interface RateLimiter {
 export interface Env {
   /** Workers AI binding (wrangler.jsonc → "ai".binding). */
   AI: Ai;
-  /** KV for license key existence checks (key = license key, value = metadata JSON). */
+  /**
+   * KV for license key existence checks (key = license key, value = metadata JSON).
+   * Also holds monthly fair-use counters under a `usage:<key>:<YYYY-MM>` prefix (quota.ts) —
+   * deliberately the same namespace so self-hosters don't have to create a second binding.
+   */
   AUTH_KEYS: KVNamespace;
+  /**
+   * Monthly transcribed-audio cap in seconds, per license key (quota.ts). Unset = 30 hours;
+   * "0" = unlimited, which is what most self-hosters want since they pay their own DashScope
+   * bill directly. Set via wrangler.jsonc `vars`, not a secret — it isn't sensitive.
+   */
+  MONTHLY_AUDIO_LIMIT_SECONDS?: string;
   /**
    * DashScope (Alibaba Cloud Model Studio) API keys — REGION-LOCKED, each region needs its own
    * key (a Singapore-region key 403s against the US endpoint and vice versa):

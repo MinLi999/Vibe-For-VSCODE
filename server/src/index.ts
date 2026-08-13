@@ -1,4 +1,6 @@
 import { authenticate } from './auth';
+import { lastRewriteUsage } from './engines/qwenRewrite';
+import { enforceMonthlyQuota, readUsage } from './quota';
 import { enforceRateLimit } from './ratelimit';
 import { handleRealtime } from './realtime';
 import { handleTranscribe, HttpError } from './transcribe';
@@ -39,6 +41,15 @@ export default {
         return handleRealtime(request, env);
       }
 
+      // Usage readout for the client's "本月已用 X/30 小时" display. Auth-gated, no body.
+      if (url.pathname === '/api/usage') {
+        const usageAuth = await authenticate(request, env);
+        if (!usageAuth.ok) {
+          return errorResponse(usageAuth.status, usageAuth.message);
+        }
+        return json(await readUsage(env, usageAuth.key), 200);
+      }
+
       if (url.pathname !== '/api/transcribe') {
         return errorResponse(404, 'Not found');
       }
@@ -53,6 +64,8 @@ export default {
 
       const tier: Tier = auth.metadata?.plan === 'pro' ? 'quality' : 'free';
       await enforceRateLimit(env, tier, auth.key);
+      // Checked BEFORE the engines run so an over-quota request costs nothing to reject.
+      await enforceMonthlyQuota(env, auth.key);
 
       const result = await handleTranscribe(request, env, auth);
       // Structured, content-free log line: engines/timings/fallback only, never transcript text.
@@ -60,6 +73,12 @@ export default {
         `transcribe ok owner=${auth.metadata?.owner ?? 'unknown'} tier=${result.tier}` +
           ` asr=${result.engines.asr} rewrite=${result.engines.rewrite}` +
           ` chars=${result.finalText.length} asr_ms=${result.timings.asr_ms} rewrite_ms=${result.timings.rewrite_ms}` +
+          // Cost gauge: cached/input token ratio for the rewrite call. The fixed prompt prefix
+          // is ~88% of every request and bills at 20% when cached, so a sustained drop here is
+          // a 30%+ cost regression — visible in the logs instead of only on the invoice.
+          (lastRewriteUsage !== undefined && lastRewriteUsage.inputTokens > 0
+            ? ` cache=${lastRewriteUsage.cachedTokens}/${lastRewriteUsage.inputTokens}`
+            : '') +
           (result.fallback ? ` fallback=${JSON.stringify(result.fallback)}` : ''),
       );
       return json(result, 200);
