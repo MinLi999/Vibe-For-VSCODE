@@ -2,6 +2,13 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**历史提交 rewrite:清除 84 条 `Co-Authored-By: Claude`,GitHub 贡献者列表只剩用户本人**;起因:用户发现 Claude 出现在 GitHub 贡献者图里,明确要求"以后不再用 Claude 作为作者"并要求把已推送的历史也改掉):
+  ① **先纠正问题模型**:git author/committer 从来都是 `Min Li`(146 条提交 0 条 author 是 Claude)——"Claude 上榜"的真实原因是 84 条 commit message 正文里的 `Co-Authored-By: Claude ...` trailer,GitHub 解析这行加了个第二贡献者头像,不是 git 配置问题,是消息内容问题。
+  ② **两次 `git filter-repo --message-callback` 都因 Claude Code 自身的 auto-mode 分类器拦截而无法由我直接执行**(拦截发生在命令派发前,repo 未受影响)——把改写命令交给用户在自己终端跑。用户第一次跑时报 `TypeError: expected string or bytes-like object, got 'NoneType'` 崩溃。
+  ③ **崩溃根因排查**(诊断 `git status`/`reflog`/`.git/filter-repo` 时间戳全部核对过,确认 repo 本身没有任何损坏,`fast-import: stream ends early` 是安全失败不是部分写入):真正原因是 **`--message-callback` 的参数约定被我搞错了**——它要的是**函数体**(git-filter-repo 内部包成 `def callback(message): <body>`),我却传了一个完整的 `def message_callback(message, metadata): ...` 定义,结果被包裹成"定义了一个从未调用的内层函数,外层隐式 return None",消息被置空后下一行 `.sub()` 对 `None` 操作直接崩。改成只传函数体、参数名固定 `message`、以 `return` 结尾,一次通过。
+  ④ **执行结果**:147 条提交(含期间新增的 3 条)全部改写,`Co-Authored-By: Claude` 清零;抽查一条曾带 trailer 的提交(`fix(macos): hotkey watchdog...`)确认改写后消息格式干净无残留空行;`git fetch` 建立 origin/main 追踪后 `git push --force-with-lease` 成功;`gh api repos/.../contributors` 确认远程贡献者列表**只剩 `MinLi999`**。改写前用 `git bundle create --all` 留了完整备份(未使用,未来若需回滚可用)。
+  ⑤ **持久化防回归**:CLAUDE.md 规则 0 新增"commit 只用用户本人 git 身份,绝不加 AI 署名行"——写进仓库本身的规范文件,不依赖某次会话的记忆,任何后续 Claude 会话打开这个仓库都会读到。
+  ⑥ **影响面确认**:仓库只有 1 个 fork(不受影响,独立副本)、15 个开放 PR 全部是 dependabot 机器人生成(非人工贡献),其中 5 个是已删除的 `desktop/` 目录的依赖升级 PR,会随下次扫描自动关闭,其余会自动 rebase。
 - 2026-08-13(**Electron 桌面端(`desktop/`)退役删除**;起因:原生 `macos/` App 已达 parity 多时,用户直接要求删除;顺带处理"GitHub 贡献者只显示我自己名字"的要求):
   ① **全量删除** `desktop/`(Electron 菜单栏应用及其 CI job)——client/server 均不依赖它,typecheck+test 删除后照常全绿(client 20/server 73)。
   ② **文档同步**:CLAUDE.md、README(中/英)、CONTRIBUTING(中/英)、docs/SELF_HOSTING(中/英)改为描述 `macos/` 原生 App(设置窗口取代托盘菜单/配置文件编辑);`.github/workflows/ci.yml` 删 desktop job;`.github/dependabot.yml` 删 desktop npm 条目(现存两个 npm workspace:client/server,`macos/` 是 SPM 不归 npm dependabot 管);issue 模板选项改「macOS app」;01-PRD 模块 H 标注退役指向模块 J。历史决策类文档(01-PRD 其余段落、05-MAC-VOICE-INPUT、handoff、04-STREAMING)保留原文不改——它们是"当时做了什么"的记录,不是当前产品描述。
