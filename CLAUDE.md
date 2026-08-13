@@ -4,9 +4,9 @@
 
 **两个前端,共用同一个 Worker 后端 / License Key / 改写档位**:
 - **VS Code 扩展**(`client/`,`ctrl+shift+space`):结果插入 LLM 聊天输入框(Claude Code / Cline / Copilot Chat)或活动编辑器。
-- **桌面 App**(`desktop/`,`⌘⌥Z`,2026-07-18 新增):Electron 菜单栏应用,转写结果模拟 ⌘V 粘进任何前台应用(首要场景 = Claude 桌面 App),即「系统级语音输入法」。
+- **macOS 原生 App**(`macos/`,`⌘⌥Z`,2026-08-08 起纯原生 SwiftUI):菜单栏常驻,转写结果模拟 ⌘V 粘进任何前台应用(首要场景 = Claude 桌面 App),即「系统级语音输入法」。早期 Electron 版(`desktop/`)已于原生达到 parity 后退役删除。
 
-技术栈:TypeScript;`client` = VS Code Extension(esbuild、零运行时依赖、严格 MVC+S);`desktop` = Electron(esbuild,复用 `client/src/services/` 的录音+API 服务,electron-builder 打包为 `VibeFox.app`、以 Developer ID 证书签名);服务端 = Cloudflare Worker(native fetch handler、AI + KV 绑定 + DashScope secrets)。
+技术栈:TypeScript;`client` = VS Code Extension(esbuild、零运行时依赖、严格 MVC+S);`macos` = 原生 SwiftUI(SPM,VibeFoxCore 库 + VibeFox App,AVAudioEngine 录音、`scripts/make-app.sh` 签名打包为 `VibeFox.app`、以 Developer ID 证书签名 + Sparkle 自动更新);服务端 = Cloudflare Worker(native fetch handler、AI + KV 绑定 + DashScope secrets)。
 
 ## AI 上下文路由 / Context Routing
 > 按任务类型读对应文档,别一次吞下全部。CLAUDE.md 只放*事实与红线*。

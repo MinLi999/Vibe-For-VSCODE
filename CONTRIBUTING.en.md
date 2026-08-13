@@ -9,10 +9,10 @@ Thanks for helping! A few ground rules keep this codebase easy to reason about.
 - `client/` — VS Code extension. **Strict MVC+S layering** (enforced by review):
   - `models/` — pure data/state. No `vscode.window` / `vscode.commands`.
   - `viewer/` — UI rendering/reading only. No `fetch(`, no `spawn(`, no business logic.
-  - `services/` — I/O only (recording process, HTTPS). No UI calls, **no `vscode` imports in services reused by desktop** (`AudioRecorderService`, `CloudflareApiService`, `SystemPasteService`).
+  - `services/` — I/O only (recording process, HTTPS). No UI calls; `AudioRecorderService`, `CloudflareApiService`, `SystemPasteService` must stay vscode-free — they're the logic source ported (not imported) into the `macos/` native app, and vscode dependencies leaking in would break that parity.
   - `controllers/` — the only layer allowed to touch M/V/S together.
 - `server/` — Cloudflare Worker. Native fetch handler; engines under `src/engines/`.
-- `desktop/` — Electron menu-bar app. Imports `client/src/services` and `client/src/models` directly — keep those vscode-free.
+- `macos/` — native SwiftUI app (Swift Package Manager). A separate implementation from `client/`, kept in sync via the cross-impl contract tests in `shared/fixtures/` rather than importing TypeScript directly.
 
 ## Hard rules
 
@@ -24,9 +24,9 @@ Thanks for helping! A few ground rules keep this codebase easy to reason about.
 ## Before you open a PR
 
 ```bash
-cd client  && npm run typecheck && npm run compile && npm test
-cd server  && npm run typecheck && npm test
-cd desktop && npm run typecheck && npm run compile
+cd client && npm run typecheck && npm run compile && npm test
+cd server && npm run typecheck && npm test
+cd macos  && swift build && swift test
 ```
 
 CI runs exactly this. Add tests for pure logic you touch (vitest; see `server/src/nonspeech.test.ts` and `client/src/models/TranscriptDedupe.test.ts` for the style).

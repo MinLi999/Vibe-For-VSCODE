@@ -1,5 +1,5 @@
 name: Bug report / 问题反馈
-description: Something broken in the extension, desktop app, or server / 扩展、桌面端或服务端出了问题
+description: Something broken in the extension, macOS app, or server / 扩展、macOS 端或服务端出了问题
 labels: [bug]
 body:
   - type: markdown
@@ -11,7 +11,7 @@ body:
       label: Component / 组件
       options:
         - VS Code extension (client/)
-        - Desktop app (desktop/)
+        - macOS app (macos/)
         - Server / Worker (server/)
         - Not sure
     validations:

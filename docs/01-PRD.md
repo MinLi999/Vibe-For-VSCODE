@@ -69,7 +69,7 @@
 - 业务逻辑:`vibefox.apiProvider` = cloudflare(默认,订阅旗舰)/ groq / openai / aliyun(paraformer 异步流)/ custom。非 cloudflare 走客户端 Whisper prompt 偏置 + 客户端 LLM 改写。
 - 分层影响面:Service:`CloudflareApiService` 各 transcribe* 方法;Controller:provider 分发与 key 管理(SecretStorage)。
 
-### 模块 H:桌面端伴侣应用(`desktop/`,2026-07-18 新增)
+### 模块 H:桌面端伴侣应用(`desktop/`,2026-07-18 新增,**2026-08-13 已退役删除,由模块 J 的 `macos/` 原生 App 取代**)
 - 业务目标:把 VibeFox 从「VS Code 专属」扩展成系统级语音输入法 —— 首要场景是 **Claude 桌面 App** 的聊天输入框,同时天然适用于任何前台应用的文本框(浏览器、备忘录等)。
 - 形态:Electron menu bar 应用(无 Dock 图标、无窗口),全局热键默认 `Command+Shift+Space`(**刻意避开** VS Code 扩展的 `Ctrl+Shift+Space`,也避开 macOS 系统保留的 `Control+Alt+Space`=切换输入法 / `Command+Space`=Spotlight 等——这些被系统抢先拦截,`globalShortcut.register` 仍返回 true 但回调永不触发;`config.ts` 的 `RESERVED_HOTKEYS` 会把存量坏热键自动迁移到默认值)。
 - 管线:与扩展完全同源 —— 直接 import 复用 `client/src/services/` 的 `AudioRecorderService`(ffmpeg 采集 + VAD + MP3 压缩)与 `CloudflareApiService`(协议 v2),同一个 Worker、同一把 License Key、同一套改写档位;插入方式 = 剪贴板 + 模拟 ⌘V 粘贴到前台应用光标处(粘贴后约 1s 恢复原剪贴板)。

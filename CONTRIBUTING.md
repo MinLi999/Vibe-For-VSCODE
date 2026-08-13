@@ -9,10 +9,10 @@
 - `client/` —— VS Code 扩展。**严格 MVC+S 分层**（代码审查时会检查）：
   - `models/` —— 纯数据与状态。禁止 `vscode.window` / `vscode.commands`。
   - `viewer/` —— 只做 UI 渲染与读取。禁止 `fetch(`、`spawn(`，不放业务判断。
-  - `services/` —— 只做 I/O（录音进程、HTTPS）。禁止调用 UI；**桌面端复用的那几个 service 里不能出现 `vscode` 导入**（`AudioRecorderService`、`CloudflareApiService`、`SystemPasteService`）。
+  - `services/` —— 只做 I/O（录音进程、HTTPS）。禁止调用 UI；`AudioRecorderService`、`CloudflareApiService`、`SystemPasteService` 里不能出现 `vscode` 导入 —— 这几个是被移植（非导入）到 `macos/` 原生 App 的逻辑源本，vscode 依赖混进去会让移植对不上。
   - `controllers/` —— 唯一可以同时触碰 M/V/S 的层。
 - `server/` —— Cloudflare Worker。原生 fetch handler，各引擎在 `src/engines/` 下。
-- `desktop/` —— Electron 菜单栏应用。直接 import `client/src/services` 与 `client/src/models`，所以那些文件必须保持与 vscode 无关。
+- `macos/` —— 原生 SwiftUI App（Swift Package Manager）。与 `client/` 是两套独立实现，靠 `shared/fixtures/` 的跨实现契约测试防止逻辑漂移，不直接 import TypeScript 代码。
 
 ## 硬性规则
 
@@ -24,9 +24,9 @@
 ## 提 PR 之前
 
 ```bash
-cd client  && npm run typecheck && npm run compile && npm test
-cd server  && npm run typecheck && npm test
-cd desktop && npm run typecheck && npm run compile
+cd client && npm run typecheck && npm run compile && npm test
+cd server && npm run typecheck && npm test
+cd macos  && swift build && swift test
 ```
 
 CI 跑的就是这些。改动了纯逻辑请补测试（用 vitest，风格参考 `server/src/nonspeech.test.ts` 和 `client/src/models/TranscriptDedupe.test.ts`）。

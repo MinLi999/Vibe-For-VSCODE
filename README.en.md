@@ -16,10 +16,10 @@ Generic dictation tools garble code-switched speech like "把 AudioRecorderServi
 
 - **Dual-engine quality tier** — Qwen3-ASR (state-of-the-art Chinese/English code-switching, auto language detection) transcribes; Qwen-Plus rewrites (fillers removed, punctuation fixed, self-corrections folded: "用A…不对,用B" keeps only B). Automatic fallback to Whisper + Llama if anything fails.
 - **Project-aware accuracy** — the VS Code extension mines identifiers from your workspace and biases both the ASR and the rewrite stage, so `dedupeAgainstSession` comes out spelled and cased correctly.
-- **Personal dictionary** — `vibefox.personalDictionary` (or `vocabulary` in the desktop config) takes the top-priority bias slots for the names and jargon your ASR keeps mishearing.
+- **Personal dictionary** — `vibefox.personalDictionary` (or the Dictionary tab in the native macOS app) takes the top-priority bias slots for the names and jargon your ASR keeps mishearing.
 - **Rewrite modes** — `off` (verbatim) / `clean` (default: fillers, punctuation, identifier casing) / `rewrite` (fold self-corrections, light restructuring, spoken enumerations become numbered lists — never changes intent).
 - **Streaming mode** (experimental, `vibefox.streamingMode`) — transcribes while you speak and inserts each utterance as it finalizes, with a live preview in the status bar. Falls back to the batch path silently on any failure.
-- **Tone adapts to the target app** — the desktop app detects the frontmost app and lets the rewrite stage match it (chat stays casual, email stays composed); coding targets keep the default dictation tuning.
+- **Tone adapts to the target app** — the native macOS app detects the frontmost app and lets the rewrite stage match it (chat stays casual, email stays composed); coding targets keep the default dictation tuning.
 - **Chinese variants** — Simplified (CN / SG-MY) and Traditional (TW / HK-MO) output.
 - **Bring your own key** — skip the hosted backend entirely: both the VS Code extension and the native macOS app have direct Groq / OpenAI / Alibaba Cloud / custom endpoint support built in, sending audio and text straight to your own key with no Worker in between.
 - **Privacy** — the server logs engine names, timings, and lengths only. Transcript content is never logged or retained, and your local transcription history (last 50 entries, browsable from the command palette or tray menu) never leaves your machine.
@@ -37,7 +37,7 @@ Generic dictation tools garble code-switched speech like "把 AudioRecorderServi
 | Recording indicator | status bar | ✅ floating HUD (waveform + live preview) |
 | Dependencies | system ffmpeg | **none** (native AVAudioEngine capture) |
 
-Both share the same Cloudflare Worker backend, license key, and rewrite settings. `desktop/` still contains the earlier Electron menu-bar app (shares the same data files); it has been superseded by the native app and is kept for reference.
+Both share the same Cloudflare Worker backend, license key, and rewrite settings.
 
 ## Quick start
 
@@ -72,8 +72,8 @@ uncommon acronyms often come out wrong. Words you add to the vocabulary are used
 "vibefox.personalDictionary": ["Anthropic", "wrangler", "useEffect", "OAuth", "Kubernetes"]
 ```
 
-**Desktop app** — tray menu → "打开配置文件", then edit the `vocabulary` array in
-`~/Library/Application Support/VibeFox/config.json`.
+**Native macOS app** — Settings window → Dictionary tab, add/remove entries directly
+(stored at `~/Library/Application Support/VibeFox/dictionary.json`).
 
 ### Limits and budget (important)
 
@@ -99,7 +99,6 @@ team's private jargon.
 ```
 ┌─ client/   VS Code extension (TypeScript, strict MVC+S, zero runtime deps)
 ├─ macos/    Native macOS app (Swift/SwiftUI, AVAudioEngine capture, zero external deps)
-├─ desktop/  Electron menu-bar app (legacy — superseded by macos/, shares its data files)
 └─ server/   Cloudflare Worker: auth (KV) → rate limit → ASR → rewrite → response
              Quality tier: Qwen3-ASR + Qwen-Plus (region-aware: SG / US)
              Free tier & fallback chain: Workers AI Whisper + Llama 3.1
@@ -110,10 +109,9 @@ Audio is 16 kHz mono everywhere: the native app captures via AVAudioEngine and e
 ## Development
 
 ```bash
-cd macos   && swift build && swift test                      # native app (needs Xcode)
-cd client  && npm install && npm run typecheck && npm run compile && npm test
-cd server  && npm install && npm run typecheck && npm test   # wrangler dev to run locally
-cd desktop && npm install && npm run typecheck && npm run compile
+cd macos  && swift build && swift test                      # native app (needs Xcode)
+cd client && npm install && npm run typecheck && npm run compile && npm test
+cd server && npm install && npm run typecheck && npm test   # wrangler dev to run locally
 ```
 
 See [CONTRIBUTING.en.md](CONTRIBUTING.en.md) for layering rules and PR guidelines. Internal design docs under [docs/](docs/) are written in Chinese.
