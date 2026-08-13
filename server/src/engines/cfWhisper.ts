@@ -14,7 +14,9 @@ const APPROX_BYTES_PER_AUDIO_SECOND = 4_000;
 
 function whisperTimeoutMs(audioBase64Length: number): number {
   const seconds = (audioBase64Length * 0.75) / APPROX_BYTES_PER_AUDIO_SECOND;
-  return Math.min(WHISPER_TIMEOUT_CEILING_MS, WHISPER_TIMEOUT_FLOOR_MS + seconds * WHISPER_TIMEOUT_PER_SECOND_MS);
+  // Rounded for the same reason as asrTimeoutMs: fractional delays can throw at the timer
+  // layer, and a throw here would take down the LAST fallback in the chain.
+  return Math.round(Math.min(WHISPER_TIMEOUT_CEILING_MS, WHISPER_TIMEOUT_FLOOR_MS + seconds * WHISPER_TIMEOUT_PER_SECOND_MS));
 }
 
 /**
