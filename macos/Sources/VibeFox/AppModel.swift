@@ -38,6 +38,16 @@ final class AppModel: ObservableObject {
     /// When the current recording was started by a key press (hold-detection anchor).
     private var hotkeyDownAt: Date?
     private let hud = HudController()
+    /// Which mechanism currently backs the hotkey (drives the watchdog's health checks).
+    private var usingEventTap = false
+    /// True while the watchdog has parked us on the Carbon fallback due to secure input.
+    private var carbonBecauseSecureInput = false
+    /// Set when phase enters .processing — the stuck-state watchdog's clock.
+    private var processingSince: Date?
+    private var watchdogTimer: Timer?
+    /// A .processing phase older than this is stuck (every network path times out way
+    /// earlier); force-reset instead of leaving the hotkey dead until an app restart.
+    private static let processingStuckSeconds: TimeInterval = 180
 
     private var sessionKeywords: [String] = []
     private var sessionAppCategory: String?
@@ -138,6 +148,61 @@ final class AppModel: ObservableObject {
         if !config.onboardingDone {
             settingsWindow.show(model: self)
         }
+        // Hotkey/state watchdog — the answer to "pressed the hotkey, nothing happened,
+        // had to restart the app". See watchdogTick for the three failure modes it heals.
+        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.watchdogTick()
+            }
+        }
+    }
+
+    private func watchdogTick() {
+        // (1) Secure input: while any app holds it, event taps are deaf even though they
+        // report "enabled". Park on the Carbon fallback until it clears ("Fn" has no Carbon
+        // equivalent — nothing to switch to, but the diagnostic still explains dead presses).
+        if KeyMonitor.secureInputActive {
+            if usingEventTap && config.hotkey.caseInsensitiveCompare("Fn") != .orderedSame {
+                keyMonitor.unregister()
+                usingEventTap = false
+                carbonBecauseSecureInput = true
+                let ok = hotkey.register(config.hotkey) { [weak self] in self?.toggleRecording() }
+                diag("hotkey_secure_input_fallback", "carbon_registered=\(ok)")
+            } else if usingEventTap {
+                diag("hotkey_secure_input_active", "fn_mode_no_fallback")
+            }
+        } else if carbonBecauseSecureInput {
+            carbonBecauseSecureInput = false
+            diag("hotkey_secure_input_cleared", "")
+            registerHotkey() // Back to the event tap (tap-vs-hold semantics return).
+        }
+
+        // (2) Tap health: macOS can disable a tap without the disable notification ever
+        // reaching our callback. Revive in place; if that doesn't stick, rebuild from scratch.
+        if usingEventTap, let enabled = keyMonitor.tapEnabled, !enabled {
+            keyMonitor.reenable()
+            if keyMonitor.tapEnabled == true {
+                diag("hotkey_tap_revived", "")
+            } else {
+                diag("hotkey_tap_rebuilt", "")
+                registerHotkey()
+            }
+        }
+
+        // (3) Stuck .processing: hotkey presses are ignored in this phase, so a hung session
+        // reads as "the app is dead". Every network path times out long before this fires.
+        if phase == .processing, let since = processingSince,
+           Date().timeIntervalSince(since) > Self.processingStuckSeconds {
+            diag("processing_watchdog_reset", "stuck_s=\(Int(Date().timeIntervalSince(since)))")
+            recorder.onPcmChunk = nil
+            recorder.cancel()
+            streamingClient?.close()
+            streamingClient = nil
+            vad = nil
+            segmentQueue = nil
+            sessionErrors.append("转写卡住已自动复位(诊断日志有记录)")
+            finishSession()
+        }
     }
 
     // MARK: config & credentials
@@ -172,6 +237,7 @@ final class AppModel: ObservableObject {
             onDown: { [weak self] in self?.hotkeyPressed() },
             onUp: { [weak self] in self?.hotkeyReleased() }
         )
+        usingEventTap = tapped
         if tapped {
             return
         }
@@ -195,7 +261,9 @@ final class AppModel: ObservableObject {
             hotkeyDownAt = nil // Second tap while recording = stop (classic toggle).
             Task { await stopAndFinish() }
         case .processing:
-            break
+            // Deliberately ignored, but LOUDLY: a press swallowed here used to be
+            // indistinguishable from a dead hotkey in field reports.
+            diag("hotkey_ignored_processing", "")
         }
     }
 
@@ -431,6 +499,7 @@ final class AppModel: ObservableObject {
         vad = nil
         partialText = ""
         phase = .idle
+        processingSince = nil
         inputLevel = 0
         hud.hide()
         diag("session_cancelled", "")
@@ -440,6 +509,7 @@ final class AppModel: ObservableObject {
         guard phase == .recording else { return }
         clearSessionTimers()
         phase = .processing
+        processingSince = Date()
         inputLevel = 0
 
         let wholePcm = recorder.stop() // Also drains the chunk queue (ordering barrier).
@@ -752,6 +822,7 @@ final class AppModel: ObservableObject {
 
     private func finishSession() {
         phase = .idle
+        processingSince = nil
         partialText = ""
         hud.hide()
         if sessionChars > 0 {
