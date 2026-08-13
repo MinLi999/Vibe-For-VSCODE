@@ -2,6 +2,12 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**Electron 桌面端(`desktop/`)退役删除**;起因:原生 `macos/` App 已达 parity 多时,用户直接要求删除;顺带处理"GitHub 贡献者只显示我自己名字"的要求):
+  ① **全量删除** `desktop/`(Electron 菜单栏应用及其 CI job)——client/server 均不依赖它,typecheck+test 删除后照常全绿(client 20/server 73)。
+  ② **文档同步**:CLAUDE.md、README(中/英)、CONTRIBUTING(中/英)、docs/SELF_HOSTING(中/英)改为描述 `macos/` 原生 App(设置窗口取代托盘菜单/配置文件编辑);`.github/workflows/ci.yml` 删 desktop job;`.github/dependabot.yml` 删 desktop npm 条目(现存两个 npm workspace:client/server,`macos/` 是 SPM 不归 npm dependabot 管);issue 模板选项改「macOS app」;01-PRD 模块 H 标注退役指向模块 J。历史决策类文档(01-PRD 其余段落、05-MAC-VOICE-INPUT、handoff、04-STREAMING)保留原文不改——它们是"当时做了什么"的记录,不是当前产品描述。
+  ③ **验证 GitHub 25 个漏洞告警与本次删除无关**(`gh api .../dependabot/alerts` 核对):全部落在 `client/package-lock.json`/`server/package-lock.json`(postcss/js-yaml/fast-uri/undici/sharp),删 desktop 不会自动清掉,已单开后台任务跟进升级。
+  ④ **commit 归属**:用户要求 GitHub 贡献者只显示他本人,以后 commit **不再加 `Co-Authored-By: Claude`**——已写入自动记忆,本次及之后的 commit 均只有 `Min Li` 一位作者。
+  ⑤ 验证:client 20 / server 73 全绿;`git push` 成功(8bd3d45)。
 - 2026-08-13(**新手引导补「选择转写引擎」步骤(开源用户首跑断头路修复)**;起因:用户确认开源使用模型时发现表述混淆——BYOK ≠ Cloudflare 自托管,且软件**不存在零配置路径**;grep 实证 OnboardingView 六步流程 0 处提及 License Key/API Key,开源用户默认 `apiProvider:"cloudflare"` 无 key,走到「试试热键」步必然撞墙且无任何指引):
   ① **前置重构:步骤序号枚举化**——原实现 `step: Int` 硬编码 0-5,四处 `step == 3` 魔法数字比较,插一步 = 手工全量重编号(正是易错点)。改为 `enum Step: Int, CaseIterable, Comparable`(welcome/microphone/accessibility/credentials/hotkey/practice/done),步骤圆点 `ForEach(Step.allCases)` 从此与真实步数永不失同步,导航逻辑改为 `step.next/.previous`。
   ② **新步骤「🔑 选择转写引擎」插在热键试用之前**(因 `startRecording()` 的 `checkCredentials()` 无凭据即拦截——凭据必须先于热键配好):两张并列卡片,官方托管(License Key,「最省事」徽章,默认选中)与自带 API Key(阿里云百炼,「免费」徽章,注明需自行申请);选卡仅为浏览、**点「保存」才落 keychain + 切 `apiProvider`**(来回点卡不破坏既有配置);两侧各带获取入口链接(vibefox.app / 百炼控制台 API-KEY 页);重跑引导时按当前 `apiProvider` 回显选中卡。步骤可跳过(文案明示后果),热键步在未配置凭据时显示橙色提示引导回退配置。
