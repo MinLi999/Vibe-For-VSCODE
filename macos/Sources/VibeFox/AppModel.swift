@@ -539,6 +539,10 @@ final class AppModel: ObservableObject {
     /// off-Cloudflare rewrite — runs a client-side clean/rewrite chat-completions call against
     /// the SAME provider. A broken/unset rewrite never blocks delivery: it just falls back to
     /// the raw transcription (matches the VS Code extension's BYOK behavior).
+    /// Mirrors the Worker's own pipeline stage-for-stage (transcribe.ts handleTranscribe):
+    /// ASR → isContextEcho/isNonSpeechTranscript guard → MIN_REWRITE_CHARS gate → rewrite
+    /// with the real server-owned prompts (safe to ship — see RewritePrompts.swift). No
+    /// fallback to a weaker engine on failure; errors surface directly to the user.
     private func transcribeViaDirectProvider(pcm: Data) async throws -> String {
         let m4a = try AacEncoder.encodeToM4A(pcm16: pcm)
         let audioBase64 = m4a.base64EncodedString()
@@ -554,7 +558,8 @@ final class AppModel: ObservableObject {
                 apiKey: try requireProviderKey("openai"), audioBase64: audioBase64, language: config.language, keywords: sessionKeywords)
         case "aliyun":
             rawText = try await directProvider.transcribeAliyun(
-                baseEndpoint: config.customEndpoint, apiKey: try requireProviderKey("aliyun"), audioBase64: audioBase64, language: config.language)
+                baseEndpoint: config.customEndpoint, apiKey: try requireProviderKey("aliyun"), audioBase64: audioBase64,
+                language: config.language, contextWords: sessionKeywords)
         case "custom":
             guard !config.customEndpoint.isEmpty else { throw ApiError.network("自定义服务地址 (customEndpoint) 未配置") }
             rawText = try await directProvider.transcribeCustom(
@@ -563,13 +568,23 @@ final class AppModel: ObservableObject {
             throw ApiError.network("不支持的 API Provider: \(provider)")
         }
 
-        guard config.rewriteMode != "off", let baseURL = DirectProviderClient.chatBaseURL(for: provider, customEndpoint: config.customEndpoint) else {
+        // Same guard the Worker runs before trusting an ASR result: catches silence
+        // hallucinations, filler-only utterances, and the context-vocabulary-echo failure
+        // mode (2026-07-12 incident) — all providers pass keywords into their ASR call
+        // (Qwen3-ASR's system message, Whisper's prompt field), so all are equally exposed.
+        guard !rawText.isEmpty, !NonSpeechFilter.isNonSpeechTranscript(rawText), !NonSpeechFilter.isContextEcho(rawText, contextWords: sessionKeywords) else {
+            throw ApiError.noSpeech
+        }
+
+        guard config.rewriteMode != "off", rawText.trimmingCharacters(in: .whitespacesAndNewlines).count >= RewritePrompts.minRewriteChars,
+              let baseURL = DirectProviderClient.chatBaseURL(for: provider, customEndpoint: config.customEndpoint) else {
             return rawText
         }
         let apiKey = (try? requireProviderKey(provider)) ?? ""
         let model = config.llmCorrectionModel.isEmpty ? DirectProviderClient.defaultRewriteModel(for: provider) : config.llmCorrectionModel
-        let systemPrompt = RewritePrompts.systemPrompt(rewriteMode: config.rewriteMode, chineseVariant: config.chineseVariant)
-        return await directProvider.rewrite(baseURL: baseURL, apiKey: apiKey, model: model, text: rawText, keywords: sessionKeywords, systemPrompt: systemPrompt)
+        let systemPrompt = RewritePrompts.systemPrompt(rewriteMode: config.rewriteMode, chineseVariant: config.chineseVariant, appCategory: sessionAppCategory)
+        let userMessage = RewritePrompts.buildUserMessage(rawText: rawText, keywords: sessionKeywords, projectContext: config.projectContext)
+        return await directProvider.rewrite(baseURL: baseURL, apiKey: apiKey, model: model, userMessage: userMessage, systemPrompt: systemPrompt, fallbackText: rawText)
     }
 
     private func requireProviderKey(_ provider: String) throws -> String {

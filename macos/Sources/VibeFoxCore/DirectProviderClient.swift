@@ -88,70 +88,55 @@ public final class DirectProviderClient {
         return keywordsPart.isEmpty ? "" : prefix + keywordsPart + suffix
     }
 
-    /// Alibaba Cloud DashScope paraformer-v2: async submit -> poll -> fetch transcript JSON.
-    /// `baseEndpoint` empty uses the public DashScope domain; non-empty overrides it (e.g. a
-    /// region-specific or proxied domain), matching the VS Code extension's `aliyun` provider.
-    public func transcribeAliyun(baseEndpoint: String, apiKey: String, audioBase64: String, language: String) async throws -> String {
+    /// Qwen3-ASR-Flash via DashScope's synchronous multimodal-generation endpoint — the SAME
+    /// engine and endpoint the Worker's quality tier uses (server/src/engines/qwenAsr.ts),
+    /// called directly with the user's own key instead of through the Worker. No fallback to
+    /// a weaker engine: `qwen3-asr-flash` is confirmed available on the domestic
+    /// `dashscope.aliyuncs.com` domain (help.aliyun.com/zh/model-studio/qwen-asr-api-reference),
+    /// so mainland users reach it without crossing the Worker or the international routing at
+    /// all — this is the whole point of BYOK for mainland reachability.
+    /// `baseEndpoint` empty uses the public domestic domain; non-empty overrides it.
+    /// `contextWords` bias recognition via a system message (same mechanism as the Worker);
+    /// callers MUST run the result through NonSpeechFilter.isContextEcho before trusting it.
+    public func transcribeAliyun(baseEndpoint: String, apiKey: String, audioBase64: String, language: String, contextWords: [String] = []) async throws -> String {
         var baseDomain = baseEndpoint.trimmingCharacters(in: .whitespaces)
         if baseDomain.isEmpty { baseDomain = "https://dashscope.aliyuncs.com" }
         while baseDomain.hasSuffix("/") { baseDomain.removeLast() }
         baseDomain = baseDomain.replacingOccurrences(of: "/compatible-mode/v1", with: "")
         if baseDomain.hasSuffix("/api/v1") { baseDomain.removeLast(7) }
 
-        var submitRequest = URLRequest(url: URL(string: "\(baseDomain)/api/v1/services/audio/asr/transcription")!)
-        submitRequest.httpMethod = "POST"
-        submitRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        submitRequest.setValue("enable", forHTTPHeaderField: "X-DashScope-Async")
-        submitRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // paraformer-v2 has no 'auto' hint value; 'zh' covers zh/en code-switching here.
-        let languageHint = (language == "auto" || language.isEmpty) ? "zh" : language
-        submitRequest.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": "paraformer-v2",
-            "input": ["file_urls": ["data:audio/mp4;base64,\(audioBase64)"]],
-            "parameters": ["language_hints": [languageHint]],
+        var request = URLRequest(url: URL(string: "\(baseDomain)/api/v1/services/aigc/multimodal-generation/generation")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let context = contextWords.joined(separator: ", ")
+        var messages: [[String: Any]] = []
+        if !context.isEmpty {
+            messages.append(["role": "system", "content": [["text": context]]])
+        }
+        messages.append(["role": "user", "content": [["audio": "data:audio/mp4;base64,\(audioBase64)"]]])
+        var asrOptions: [String: Any] = ["enable_itn": true]
+        if language != "auto" && !language.isEmpty {
+            asrOptions["language"] = language
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": "qwen3-asr-flash",
+            "input": ["messages": messages],
+            "parameters": ["asr_options": asrOptions],
         ])
 
-        let (submitData, submitResponse) = try await perform(submitRequest)
-        guard (submitResponse as? HTTPURLResponse)?.statusCode == 200 else {
-            throw ApiError.server((submitResponse as? HTTPURLResponse)?.statusCode ?? 0, "提交转写任务失败: \(Self.errorDetail(submitData))")
+        let (data, response) = try await perform(request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw ApiError.server((response as? HTTPURLResponse)?.statusCode ?? 0, Self.errorDetail(data))
         }
-        guard let taskId = (Self.jsonObject(submitData)?["output"] as? [String: Any])?["task_id"] as? String else {
-            throw ApiError.server(200, "未获取到转写任务 ID")
+        guard let output = Self.jsonObject(data)?["output"] as? [String: Any],
+              let choices = output["choices"] as? [[String: Any]],
+              let content = choices.first?["message"] as? [String: Any],
+              let items = content["content"] as? [[String: Any]],
+              let text = items.compactMap({ $0["text"] as? String }).first else {
+            throw ApiError.server(200, "转写响应格式异常")
         }
-
-        let taskURL = URL(string: "\(baseDomain)/api/v1/tasks/\(taskId)")!
-        var resultURLString: String?
-        for _ in 0..<40 { // 40 * 200ms = 8s max poll window (matches the client's budget).
-            try await Task.sleep(nanoseconds: 200_000_000)
-            var pollRequest = URLRequest(url: taskURL)
-            pollRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            guard let (pollData, pollResponse) = try? await perform(pollRequest),
-                  (pollResponse as? HTTPURLResponse)?.statusCode == 200,
-                  let output = Self.jsonObject(pollData)?["output"] as? [String: Any] else {
-                continue // Transient poll failure — try again on the next tick.
-            }
-            let status = output["task_status"] as? String ?? "PENDING"
-            if status == "SUCCEEDED" {
-                let results = output["results"] as? [[String: Any]] ?? []
-                resultURLString = results.first?["transcription_url"] as? String
-                break
-            } else if status == "FAILED" {
-                throw ApiError.server(200, "转写任务失败: \(output["message"] as? String ?? "未知错误")")
-            }
-        }
-        guard let resultURLString, let resultURL = URL(string: resultURLString) else {
-            throw ApiError.timeout("转写任务处理超时,请重试")
-        }
-
-        let (resultData, resultResponse) = try await perform(URLRequest(url: resultURL))
-        guard (resultResponse as? HTTPURLResponse)?.statusCode == 200 else {
-            throw ApiError.server((resultResponse as? HTTPURLResponse)?.statusCode ?? 0, "获取转写文件失败")
-        }
-        let transcripts = (Self.jsonObject(resultData)?["transcripts"] as? [[String: Any]]) ?? []
-        let text = transcripts
-            .flatMap { ($0["sentences"] as? [[String: Any]]) ?? [] }
-            .compactMap { $0["text"] as? String }
-            .joined(separator: " ")
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -202,11 +187,14 @@ public final class DirectProviderClient {
     /// OpenAI-compatible /chat/completions rewrite call. On any failure this returns the
     /// ORIGINAL text unchanged (matches the client's behavior: a broken BYOK rewrite must
     /// never block delivery of the raw transcription).
-    public func rewrite(baseURL: String, apiKey: String, model: String, text: String, keywords: [String], systemPrompt: String) async -> String {
+    /// `userMessage` is pre-built by the caller (RewritePrompts.buildUserMessage) so this stays
+    /// a thin transport — it never constructs prompt content itself. Returns `fallbackText`
+    /// (the raw transcription) on ANY failure so a broken BYOK rewrite never blocks delivery.
+    public func rewrite(baseURL: String, apiKey: String, model: String, userMessage: String, systemPrompt: String, fallbackText: String) async -> String {
         var trimmedBase = baseURL.trimmingCharacters(in: .whitespaces)
         while trimmedBase.hasSuffix("/") { trimmedBase.removeLast() }
         guard let url = URL(string: "\(trimmedBase)/chat/completions") else {
-            return text
+            return fallbackText
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -218,11 +206,11 @@ public final class DirectProviderClient {
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": "参考代码词表：\(keywords.joined(separator: ", "))\n\n待转写文本：\(text)"],
+                ["role": "user", "content": userMessage],
             ],
             "temperature": 0,
         ]) else {
-            return text
+            return fallbackText
         }
         request.httpBody = body
 
@@ -232,7 +220,7 @@ public final class DirectProviderClient {
               let message = choices.first?["message"] as? [String: Any],
               let content = (message["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !content.isEmpty else {
-            return text
+            return fallbackText
         }
         return content
     }
