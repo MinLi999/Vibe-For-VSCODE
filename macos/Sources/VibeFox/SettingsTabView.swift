@@ -248,7 +248,7 @@ struct SettingsTabView: View {
                 if provider == "aliyun" {
                     HStack {
                         Text("服务地址(可选)")
-                        TextField("留空用官方 dashscope.aliyuncs.com", text: $customEndpointInput)
+                        TextField("留空用国内域名 dashscope.aliyuncs.com", text: $customEndpointInput)
                             .textFieldStyle(.roundedBorder)
                             .onAppear { customEndpointInput = model.config.customEndpoint }
                         Button("保存") {
@@ -256,8 +256,10 @@ struct SettingsTabView: View {
                             model.saveConfig()
                         }
                     }
+                    Text("引擎为 qwen3-asr-flash,与官方托管服务同款、走国内域名直连,不经 Cloudflare——大陆用户推荐用这个模式。")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
-                Text("音频与转写内容直接发给\(providerLabel(provider)),不经过 VibeFox 的 Worker;改写(clean/rewrite)也会用同一个 Key 调用它的对话接口。")
+                Text("音频与转写内容直接发给\(providerLabel(provider)),不经过 VibeFox 的 Worker;改写用的是与官方服务相同的 prompt,同一个 Key 调用它的对话接口。")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
