@@ -77,8 +77,12 @@ export const RESERVED_HOTKEYS = new Set<string>([
 /**
  * The officially hosted Worker (paid convenience service). Self-hosters: deploy server/ with
  * wrangler and point `endpoint` in config.json at your own Worker URL — see docs/SELF_HOSTING.md.
+ * Custom domain (api.vibefox.app) bound 2026-08-13; the workers.dev URL keeps routing to the
+ * same Worker indefinitely (server/wrangler.jsonc keeps workers_dev:true).
  */
-export const OFFICIAL_HOSTED_ENDPOINT = 'https://vibe-voice-worker.presley-us.workers.dev';
+export const OFFICIAL_HOSTED_ENDPOINT = 'https://api.vibefox.app';
+/** Pre-custom-domain default, still materialized in existing installs' config.json. */
+const LEGACY_HOSTED_ENDPOINT = 'https://vibe-voice-worker.presley-us.workers.dev';
 
 export const DEFAULT_CONFIG: DesktopConfig = {
   endpoint: OFFICIAL_HOSTED_ENDPOINT,
@@ -166,6 +170,11 @@ export function loadConfig(userDataDir: string): DesktopConfig {
   // the server still locks the Whisper fallback to 'zh', so nothing is lost by migrating.
   if (merged.language === 'zh') {
     merged.language = 'auto';
+  }
+  // Auto-migrate the pre-custom-domain default endpoint (same reasoning as above: a default
+  // change alone never reaches installs whose config.json already has the old URL written).
+  if (merged.endpoint === LEGACY_HOSTED_ENDPOINT) {
+    merged.endpoint = OFFICIAL_HOSTED_ENDPOINT;
   }
   try {
     fs.mkdirSync(userDataDir, { recursive: true });

@@ -28,12 +28,28 @@ public struct AppConfig: Codable, Equatable {
     public var onboardingDone: Bool
     public var vocabulary: [String]
     public var projectContext: String
+    /// "cloudflare" (default: the hosted/self-hosted Worker at `endpoint`) or a direct BYOK
+    /// provider ("groq" | "openai" | "aliyun" | "custom") that skips the Worker entirely —
+    /// see DirectProviderClient.swift. Mirrors the VS Code extension's `vibefox.apiProvider`.
+    public var apiProvider: String
+    /// Required for `custom` (transcription POST endpoint); optional override base URL for
+    /// `aliyun` (empty = dashscope.aliyuncs.com default). Unused by other providers.
+    public var customEndpoint: String
+    /// Optional model override for the BYOK rewrite (clean/rewrite) chat-completions call.
+    /// Empty = each provider's built-in default model.
+    public var llmCorrectionModel: String
 
-    public static let officialHostedEndpoint = "https://vibe-voice-worker.presley-us.workers.dev"
+    // Custom domain (api.vibefox.app) bound 2026-08-13; the workers.dev URL keeps routing to
+    // the same Worker indefinitely (server/wrangler.jsonc keeps workers_dev:true) so this
+    // switch doesn't strand anyone still pointed at the old default.
+    public static let officialHostedEndpoint = "https://api.vibefox.app"
+    /// Pre-custom-domain default, still materialized in existing installs' config.json.
+    static let legacyHostedEndpoint = "https://vibe-voice-worker.presley-us.workers.dev"
 
     public static let rewriteModes = ["off", "clean", "rewrite"]
     public static let chineseVariants = ["simplified-cn", "simplified-sg-my", "traditional-tw", "traditional-hk-mo"]
     public static let regions = ["auto", "apac", "us"]
+    public static let apiProviders = ["cloudflare", "groq", "openai", "aliyun", "custom"]
 
     /// Accelerators macOS reserves as system shortcuts (registration "succeeds" but never fires).
     public static let reservedHotkeys: Set<String> = [
@@ -59,6 +75,9 @@ public struct AppConfig: Codable, Equatable {
         restoreClipboard: true,
         streamingMode: false,
         onboardingDone: false,
+        apiProvider: "cloudflare",
+        customEndpoint: "",
+        llmCorrectionModel: "",
         vocabulary: [
             "Claude Code", "Claude", "Anthropic", "Cloudflare", "Cloudflare Workers",
             "DashScope", "Qwen", "VibeFox", "GitHub", "Vercel", "Supabase",
@@ -95,6 +114,9 @@ public struct AppConfig: Codable, Equatable {
         restoreClipboard = field(.restoreClipboard, d.restoreClipboard)
         streamingMode = field(.streamingMode, d.streamingMode)
         onboardingDone = field(.onboardingDone, d.onboardingDone)
+        apiProvider = field(.apiProvider, d.apiProvider)
+        customEndpoint = field(.customEndpoint, d.customEndpoint)
+        llmCorrectionModel = field(.llmCorrectionModel, d.llmCorrectionModel)
         vocabulary = field(.vocabulary, d.vocabulary)
         projectContext = field(.projectContext, d.projectContext)
         normalize()
@@ -106,6 +128,7 @@ public struct AppConfig: Codable, Equatable {
         vadMinDurationMs: Int, vadSilenceThreshold: Int, vadAdaptiveThreshold: Bool,
         rewriteMode: String, chineseVariant: String, dashscopeRegion: String,
         restoreClipboard: Bool, streamingMode: Bool, onboardingDone: Bool,
+        apiProvider: String, customEndpoint: String, llmCorrectionModel: String,
         vocabulary: [String], projectContext: String
     ) {
         self.endpoint = endpoint
@@ -125,6 +148,9 @@ public struct AppConfig: Codable, Equatable {
         self.restoreClipboard = restoreClipboard
         self.streamingMode = streamingMode
         self.onboardingDone = onboardingDone
+        self.apiProvider = apiProvider
+        self.customEndpoint = customEndpoint
+        self.llmCorrectionModel = llmCorrectionModel
         self.vocabulary = vocabulary
         self.projectContext = projectContext
     }
@@ -138,9 +164,13 @@ public struct AppConfig: Codable, Equatable {
         if !AppConfig.rewriteModes.contains(rewriteMode) { rewriteMode = AppConfig.default.rewriteMode }
         if !AppConfig.chineseVariants.contains(chineseVariant) { chineseVariant = AppConfig.default.chineseVariant }
         if !AppConfig.regions.contains(dashscopeRegion) { dashscopeRegion = AppConfig.default.dashscopeRegion }
+        if !AppConfig.apiProviders.contains(apiProvider) { apiProvider = AppConfig.default.apiProvider }
         endpoint = endpoint.trimmingCharacters(in: .whitespaces)
         while endpoint.hasSuffix("/") { endpoint.removeLast() }
         if endpoint.isEmpty { endpoint = AppConfig.officialHostedEndpoint }
+        // Auto-migrate the pre-custom-domain default (a constant change alone never reaches
+        // installs whose config.json already has the old URL materialized on disk).
+        if endpoint == AppConfig.legacyHostedEndpoint { endpoint = AppConfig.officialHostedEndpoint }
     }
 }
 

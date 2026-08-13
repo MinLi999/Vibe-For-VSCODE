@@ -5,8 +5,14 @@
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // 不暴露 *.workers.dev 之外的入口前先用默认域;上生产可切自定义域并置 false
+  // 自定义域 api.vibefox.app 已绑定(2026-08-13,域名已在同一 Cloudflare 账号,wrangler deploy
+  // 会自动置备 DNS + 边缘证书,无需手动去 dashboard 点)。workers_dev 保持 true 不关:旧的
+  // *.workers.dev 地址仍是官方托管端点的历史/后备形式,已发布的客户端默认值指向它,关掉会
+  // 立即打断这些老版本,新旧两个地址长期并存路由到同一个 Worker。
   "workers_dev": true,
+  "routes": [
+    { "pattern": "api.vibefox.app", "custom_domain": true }
+  ],
 
   // Workers AI —— Whisper large-v3-turbo 经此绑定调用
   "ai": {
