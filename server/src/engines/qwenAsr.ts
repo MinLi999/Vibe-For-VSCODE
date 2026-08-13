@@ -22,7 +22,11 @@ const APPROX_BYTES_PER_AUDIO_SECOND = 4_000;
 
 export function asrTimeoutMs(audioBase64Length: number): number {
   const seconds = (audioBase64Length * 0.75) / APPROX_BYTES_PER_AUDIO_SECOND;
-  return Math.min(QWEN_TIMEOUT_CEILING_MS, QWEN_TIMEOUT_FLOOR_MS + seconds * QWEN_TIMEOUT_PER_SECOND_MS);
+  // Math.round is LOAD-BEARING: AbortSignal.timeout() throws RangeError on a fractional
+  // delay, and that throw lands inside the ASR try/catch — i.e. a float here silently
+  // downgrades EVERY quality-tier request to Whisper. Caught by the orchestration
+  // integration test the day after this function shipped without it.
+  return Math.round(Math.min(QWEN_TIMEOUT_CEILING_MS, QWEN_TIMEOUT_FLOOR_MS + seconds * QWEN_TIMEOUT_PER_SECOND_MS));
 }
 
 export interface QwenRegion {

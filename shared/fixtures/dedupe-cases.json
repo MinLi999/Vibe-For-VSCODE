@@ -1,0 +1,12 @@
+{
+  "$comment": "Single source of truth for dedupeAgainstSession, consumed by client/src/models/TranscriptDedupe.test.ts (TS original) AND macos TranscriptDedupeSharedTests (Swift port).",
+  "cases": [
+    { "prev": "你现在需要调整几点,第一是布局。", "text": "你现在需要调整几点,第一是布局。", "expect": "", "why": "whole utterance is a re-emission" },
+    { "prev": "你现在需要调整几点,第一是布局。", "text": "你现在需要调整几点、第一是布局", "expect": "", "why": "re-emission with different punctuation still normalizes to an echo" },
+    { "prev": "先把登录页面的样式统一改好", "text": "页面的样式统一改好然后再提交代码", "expect": "然后再提交代码", "why": ">=8 char suffix-prefix overlap is trimmed" },
+    { "prev": "我们先做这个", "text": "这个方案还需要评审", "expect": "这个方案还需要评审", "why": "overlap under 8 chars is an ordinary repeat, kept" },
+    { "prev": "前一句话", "text": "完全不同的新内容", "expect": "完全不同的新内容", "why": "fresh text passes through" },
+    { "prev": "", "text": "第一句", "expect": "第一句", "why": "empty session" },
+    { "prev": "上一段说到 useEffect 的问题", "text": "  ", "expect": "", "why": "whitespace-only new text trims to empty" }
+  ]
+}

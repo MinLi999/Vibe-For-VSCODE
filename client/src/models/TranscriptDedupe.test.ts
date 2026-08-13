@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+// Direct JSON import (resolveJsonModule) — import.meta is unavailable under the extension's
+// CommonJS module target, and vitest handles JSON imports natively.
+import sharedFixtures from '../../../shared/fixtures/dedupe-cases.json';
 import { dedupeAgainstSession } from './TranscriptDedupe';
 
 describe('dedupeAgainstSession', () => {
@@ -25,5 +28,20 @@ describe('dedupeAgainstSession', () => {
   it('keeps genuinely new text', () => {
     const session = '第一步先安装依赖。';
     expect(dedupeAgainstSession(session, '第二步配置环境变量')).toBe('第二步配置环境变量');
+  });
+});
+
+/**
+ * Cross-implementation contract: shared/fixtures/dedupe-cases.json is the single source of
+ * truth also consumed by the Swift port (macos TranscriptDedupeSharedTests). Divergence
+ * between this TS original and the Swift port fails one side's suite instead of shipping.
+ */
+const shared = sharedFixtures as unknown as { cases: { prev: string; text: string; expect: string; why: string }[] };
+
+describe('shared fixtures (cross-implementation contract with the Swift port)', () => {
+  it('agrees with every shared case', () => {
+    for (const c of shared.cases) {
+      expect(dedupeAgainstSession(c.prev, c.text), `${c.why}: ${JSON.stringify(c.text)}`).toBe(c.expect);
+    }
   });
 });

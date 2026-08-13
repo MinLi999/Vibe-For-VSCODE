@@ -1,0 +1,67 @@
+{
+  "$comment": "Single source of truth for the non-speech/hallucination filter, consumed by server/src/nonspeech.test.ts (TS original) AND macos NonSpeechFilterSharedTests (Swift port). The two implementations MUST agree on every case here; add new regressions to this file so both sides inherit them automatically.",
+  "isNonSpeechTranscript": [
+    { "text": "", "expect": true, "why": "empty" },
+    { "text": "   ", "expect": true, "why": "whitespace only" },
+    { "text": "...", "expect": true, "why": "punctuation only" },
+    { "text": "。。。…", "expect": true, "why": "cjk punctuation only" },
+    { "text": "- - -", "expect": true, "why": "dashes only" },
+    { "text": "(音频中充斥着强烈的机械噪音)", "expect": true, "why": "bracketed scene description" },
+    { "text": "【背景音乐】", "expect": true, "why": "bracketed, cjk brackets" },
+    { "text": "(inaudible)", "expect": true, "why": "bracketed english" },
+    { "text": "音频中没有清晰的人声", "expect": true, "why": "audio narration prefix" },
+    { "text": "本段音频无法识别", "expect": true, "why": "audio narration prefix" },
+    { "text": "请点赞订阅", "expect": true, "why": "subtitle spam, short" },
+    { "text": "Thank you for watching", "expect": true, "why": "whisper watermark" },
+    { "text": "字幕由 Amara.org 社区提供", "expect": true, "why": "subtitle watermark" },
+    { "text": "我们需要给视频播放器加一个字幕解析模块,要求支持 SRT 和 ASS 两种格式的加载和渲染", "expect": false, "why": "long real sentence mentioning 字幕 must survive" },
+    { "text": "帮我修复这个 bug,顺便把等号那一行也检查一下", "expect": false, "why": "real dictation with spoken symbol word" },
+    { "text": "把 AudioRecorderService 的重试逻辑改成确认式启动", "expect": false, "why": "real dictation" },
+    { "text": "嗯", "expect": true, "why": "filler only - the trailing-segment hallucination" },
+    { "text": "嗯。", "expect": true, "why": "filler + punctuation" },
+    { "text": "嗯嗯,呃。", "expect": true, "why": "multiple fillers" },
+    { "text": "Um, uh...", "expect": true, "why": "english fillers" },
+    { "text": "Hmm.", "expect": true, "why": "english filler" },
+    { "text": "嗯,好的,开始吧", "expect": false, "why": "filler accompanying real content" },
+    { "text": "嗯,continue", "expect": false, "why": "filler + english word" },
+    { "text": "好嘛", "expect": false, "why": "嘛 as sentence particle, not standalone filler" }
+  ],
+  "isContextEcho": [
+    {
+      "text": "Cloudflare Workers, Claude Code, Anthropic, DashScope",
+      "words": ["Cloudflare Workers", "Cloudflare", "Claude Code", "Anthropic", "DashScope"],
+      "expect": true,
+      "why": "pure vocabulary recitation"
+    },
+    {
+      "text": "Cloudflare Workers Cloudflare Claude Code",
+      "words": ["Cloudflare Workers", "Cloudflare", "Claude Code", "Anthropic", "DashScope"],
+      "expect": true,
+      "why": "longest-first consumption must not leave a Workers stub as residual"
+    },
+    {
+      "text": "帮我把 Claude Code 的配置改一下,然后部署到 Cloudflare Workers 上面去",
+      "words": ["Cloudflare Workers", "Cloudflare", "Claude Code", "Anthropic", "DashScope"],
+      "expect": false,
+      "why": "real speech containing keywords"
+    },
+    {
+      "text": "Claude Code",
+      "words": ["Cloudflare Workers", "Cloudflare", "Claude Code", "Anthropic", "DashScope"],
+      "expect": false,
+      "why": "short utterance exemption"
+    },
+    {
+      "text": "commit",
+      "words": ["commit"],
+      "expect": false,
+      "why": "short utterance exemption, single keyword"
+    },
+    {
+      "text": "Cloudflare Workers Claude Code Anthropic DashScope",
+      "words": [],
+      "expect": false,
+      "why": "no context injected, never flags"
+    }
+  ]
+}

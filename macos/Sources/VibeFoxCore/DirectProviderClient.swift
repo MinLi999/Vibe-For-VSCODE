@@ -34,6 +34,9 @@ public final class DirectProviderClient {
     /// `prompt` field framed as preceding transcript text (Whisper treats prompt as context,
     /// not instructions) — capped at 800 UTF-8 bytes, same budget as the server's Whisper path.
     private func transcribeOpenAICompatible(url: String, apiKey: String, model: String, audioBase64: String, language: String, keywords: [String]) async throws -> String {
+        guard let requestURL = URL(string: url) else {
+            throw ApiError.network("无效的服务地址:\(url)") // Callers pass constants today; stay crash-proof anyway.
+        }
         guard let audio = Data(base64Encoded: audioBase64) else {
             throw ApiError.network("音频编码无效")
         }
@@ -57,7 +60,7 @@ public final class DirectProviderClient {
         }
         body.append("--\(boundary)--\r\n")
 
-        var request = URLRequest(url: URL(string: url)!)
+        var request = URLRequest(url: requestURL)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -105,7 +108,12 @@ public final class DirectProviderClient {
         baseDomain = baseDomain.replacingOccurrences(of: "/compatible-mode/v1", with: "")
         if baseDomain.hasSuffix("/api/v1") { baseDomain.removeLast(7) }
 
-        var request = URLRequest(url: URL(string: "\(baseDomain)/api/v1/services/aigc/multimodal-generation/generation")!)
+        // baseDomain is user input (settings field) — a malformed value must be an error,
+        // never a force-unwrap crash.
+        guard let url = URL(string: "\(baseDomain)/api/v1/services/aigc/multimodal-generation/generation") else {
+            throw ApiError.network("无效的服务地址:\(baseEndpoint)")
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

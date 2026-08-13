@@ -80,6 +80,34 @@ public enum ApiError: Error, LocalizedError {
         case .timeout(let message): return "请求超时:\(message)"
         }
     }
+
+    /// Short machine-readable code for diagnostics and pending-audio entries.
+    public var reasonCode: String {
+        switch self {
+        case .unauthorized: return "unauthorized"
+        case .payloadTooLarge: return "payload_too_large"
+        case .rateLimited: return "rate_limited"
+        case .noSpeech: return "no_speech"
+        case .timeout: return "timeout"
+        case .network: return "network"
+        case .server(let status, _): return "server_\(status)"
+        }
+    }
+
+    /// Whether re-sending the SAME audio can plausibly succeed. Auth/payload failures won't
+    /// improve; transient transport/engine failures will. `no_speech` is the special case this
+    /// whole classification exists for: high capture peak = real audio the engines misread
+    /// (retryable); low peak = it genuinely was silence (don't burn a retry).
+    public func isRetryable(capturePeak: Int) -> Bool {
+        switch self {
+        case .timeout, .network, .rateLimited, .server:
+            return true
+        case .noSpeech:
+            return capturePeak > 1000
+        case .unauthorized, .payloadTooLarge:
+            return false
+        }
+    }
 }
 
 public final class ApiClient {
