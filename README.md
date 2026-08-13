@@ -37,7 +37,7 @@ VibeFox 完全开源（AGPL-3.0）。你可以用官方托管后端配一把 Lic
 | 录音指示 | 状态栏 | ✅ 悬浮 HUD（波形 + 实时预览） |
 | 依赖 | 系统 ffmpeg | **零依赖**（AVAudioEngine 原生采集） |
 
-两端共用同一个 Cloudflare Worker 后端、同一把 License Key、同一套改写档位。`desktop/` 下还有早期的 Electron 版菜单栏应用（与原生 App 共用数据文件），已由原生 App 取代、仅作参考保留。
+两端共用同一个 Cloudflare Worker 后端、同一把 License Key、同一套改写档位。
 
 ## 快速开始
 
@@ -69,7 +69,7 @@ ASR 对中文很稳，但英文专有名词、驼峰标识符、少见缩写经�
 "vibefox.personalDictionary": ["Anthropic", "wrangler", "useEffect", "OAuth", "Kubernetes"]
 ```
 
-**桌面应用**：托盘菜单 →「打开配置文件」，编辑 `vocabulary` 数组（在 `~/Library/Application Support/VibeFox/config.json`）。
+**macOS 原生 App**：设置窗口 →「词库」页直接增删词条（存于 `~/Library/Application Support/VibeFox/dictionary.json`）。
 
 ### 上限与配额（重要）
 
@@ -88,7 +88,6 @@ ASR 对中文很稳，但英文专有名词、驼峰标识符、少见缩写经�
 ```
 ┌─ client/   VS Code 扩展（TypeScript,严格 MVC+S,零运行时依赖）
 ├─ macos/    macOS 原生 App（Swift/SwiftUI,AVAudioEngine 采集,零外部依赖）
-├─ desktop/  Electron 菜单栏应用（legacy,已由 macos/ 取代,数据文件互通）
 └─ server/   Cloudflare Worker：鉴权(KV) → 限流 → ASR → 改写 → 响应
              质量档：Qwen3-ASR + Qwen-Plus（区域感知：新加坡 / 美国）
              免费档与降级链：Workers AI Whisper + Llama 3.1
@@ -99,10 +98,9 @@ ASR 对中文很稳，但英文专有名词、驼峰标识符、少见缩写经�
 ## 开发
 
 ```bash
-cd macos   && swift build && swift test                      # 原生 App(需 Xcode)
-cd client  && npm install && npm run typecheck && npm run compile && npm test
-cd server  && npm install && npm run typecheck && npm test   # wrangler dev 本地起服务
-cd desktop && npm install && npm run typecheck && npm run compile
+cd macos  && swift build && swift test                      # 原生 App(需 Xcode)
+cd client && npm install && npm run typecheck && npm run compile && npm test
+cd server && npm install && npm run typecheck && npm test   # wrangler dev 本地起服务
 ```
 
 分层规范与 PR 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。[docs/](docs/) 下的内部设计文档为中文。
