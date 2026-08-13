@@ -8,7 +8,10 @@ struct SettingsTabView: View {
 
     @State private var licenseInput = ""
     @State private var endpointInput = ""
+    @State private var providerKeyInput = ""
+    @State private var customEndpointInput = ""
     @State private var hotkeyMessage: String?
+    @State private var providerFeedback: String?
     @State private var micTesting = false
     @State private var micLevel: Float = 0
     @State private var micRecorder: AudioRecorder?
@@ -86,6 +89,31 @@ struct SettingsTabView: View {
                         }
                         Text("自托管:部署 server/ 到自己的 Cloudflare Worker 后把地址填到这里(见 docs/SELF_HOSTING.md);转写引擎密钥只存在 Worker 端。")
                             .font(.callout).foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                }
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("转写引擎").font(.headline)
+                            Text("默认用上面的 Worker;也可以完全跳过它,直连你自己的模型服务商")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Picker("", selection: Binding(
+                            get: { model.config.apiProvider },
+                            set: { model.config.apiProvider = $0; model.saveConfig(); providerFeedback = nil }
+                        )) {
+                            Text("Cloudflare(默认)").tag("cloudflare")
+                            Text("Groq").tag("groq")
+                            Text("OpenAI").tag("openai")
+                            Text("阿里云").tag("aliyun")
+                            Text("自定义").tag("custom")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        byokFields
                     }
                     .padding(6)
                 }
@@ -173,6 +201,78 @@ struct SettingsTabView: View {
             .padding(16)
         }
         .onDisappear { stopMicTest() }
+    }
+
+    @ViewBuilder
+    private var byokFields: some View {
+        let provider = model.config.apiProvider
+        switch provider {
+        case "cloudflare":
+            EmptyView()
+        case "custom":
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("服务地址")
+                    TextField("https://your-server.example.com/transcribe", text: $customEndpointInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onAppear { customEndpointInput = model.config.customEndpoint }
+                    Button("保存") {
+                        model.config.customEndpoint = customEndpointInput.trimmingCharacters(in: .whitespaces)
+                        model.saveConfig()
+                        providerFeedback = "已保存"
+                    }
+                }
+                Text("接口约定:POST JSON { audio, language, keywords } → { text }。不需要 Key,鉴权由你的服务自行处理。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        default: // groq / openai / aliyun
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("\(providerLabel(provider)) API Key")
+                    Text(model.providerKeyPresent(provider) ? "已设置 ✓(存于系统钥匙串)" : "未设置")
+                        .foregroundStyle(model.providerKeyPresent(provider) ? .green : .orange)
+                }
+                HStack {
+                    SecureField("粘贴 API Key…", text: $providerKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                    Button("保存") {
+                        model.setProviderKey(providerKeyInput.trimmingCharacters(in: .whitespaces), for: provider)
+                        providerKeyInput = ""
+                        providerFeedback = "已保存到系统钥匙串"
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(providerKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("清除", role: .destructive) { model.clearProviderKey(for: provider) }
+                        .disabled(!model.providerKeyPresent(provider))
+                }
+                if provider == "aliyun" {
+                    HStack {
+                        Text("服务地址(可选)")
+                        TextField("留空用官方 dashscope.aliyuncs.com", text: $customEndpointInput)
+                            .textFieldStyle(.roundedBorder)
+                            .onAppear { customEndpointInput = model.config.customEndpoint }
+                        Button("保存") {
+                            model.config.customEndpoint = customEndpointInput.trimmingCharacters(in: .whitespaces)
+                            model.saveConfig()
+                        }
+                    }
+                }
+                Text("音频与转写内容直接发给\(providerLabel(provider)),不经过 VibeFox 的 Worker;改写(clean/rewrite)也会用同一个 Key 调用它的对话接口。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        if let providerFeedback {
+            Text(providerFeedback).font(.callout).foregroundStyle(.green)
+        }
+    }
+
+    private func providerLabel(_ provider: String) -> String {
+        switch provider {
+        case "groq": return "Groq"
+        case "openai": return "OpenAI"
+        case "aliyun": return "阿里云"
+        default: return provider
+        }
     }
 
     private func toggleMicTest() {
