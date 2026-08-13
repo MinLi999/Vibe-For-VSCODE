@@ -60,19 +60,37 @@ if [ "${1:-}" = "--skip-sign" ]; then
 fi
 
 if [ -d "$APP/Contents/Frameworks/Sparkle.framework" ]; then
-  codesign --force --options runtime --sign "$IDENTITY" \
-    "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc"
-  codesign --force --options runtime --sign "$IDENTITY" \
-    "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc"
-  codesign --force --options runtime --sign "$IDENTITY" \
-    "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
-  codesign --force --options runtime --sign "$IDENTITY" \
+  # Deep-sign order: innermost bundles/binaries first, outer framework last (its signature
+  # seals the whole tree). Every Mach-O in the framework needs its OWN valid signature —
+  # missing Updater.app here is exactly what got the first submission rejected as Invalid
+  # ("not signed with a valid Developer ID certificate" / "no secure timestamp"). --timestamp
+  # is explicit (not just implied by --options runtime) so a flaky TSA round-trip never
+  # silently produces an unnotarizable binary again.
+  SPARKLE_VERSIONS="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+    "$SPARKLE_VERSIONS/XPCServices/Downloader.xpc"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+    "$SPARKLE_VERSIONS/XPCServices/Installer.xpc"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+    "$SPARKLE_VERSIONS/Updater.app"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+    "$SPARKLE_VERSIONS/Autoupdate"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" \
     "$APP/Contents/Frameworks/Sparkle.framework"
 fi
-codesign --force --options runtime \
+codesign --force --options runtime --timestamp \
   --entitlements scripts/entitlements.plist \
   --sign "$IDENTITY" "$APP"
 codesign --verify --strict --deep "$APP"
+
+# Fail fast, locally, instead of burning a notarization round-trip: enumerate every Mach-O
+# under the bundle and confirm each carries a Developer ID signature + secure timestamp.
+while IFS= read -r bin; do
+  info="$(codesign -dvvv "$bin" 2>&1)"
+  echo "$info" | grep -q "Authority=Developer ID Application" || { echo "UNSIGNED (no Developer ID): $bin"; exit 1; }
+  echo "$info" | grep -q "^Timestamp=" || { echo "MISSING SECURE TIMESTAMP: $bin"; exit 1; }
+done < <(find "$APP" -type f -perm -u+x ! -name "*.dylib" -exec sh -c 'file "$1" | grep -q "Mach-O"' _ {} \; -print)
+echo "All Mach-O binaries verified: Developer ID signature + secure timestamp."
 
 if [ "${1:-}" = "--notarize" ]; then
   ditto -c -k --keepParent "$APP" "$ZIP"
