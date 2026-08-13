@@ -3,11 +3,27 @@ import type { Env, RegionPreference } from '../types';
 import { resolveDashscopeRegion } from './dashscopeRegion';
 
 /**
- * Qwen3-ASR normally answers a 10s utterance in 1-2s; 6s is already pathological, so we cut
- * over to the Cloudflare-edge Whisper fallback instead of keeping the user staring at a
- * spinner (the fallback chain is what "the app froze for 10+ seconds" reports came from).
+ * Qwen3-ASR answers a 10s utterance in 1-2s, i.e. processing time scales WITH audio length —
+ * so a fixed timeout is wrong. The original flat 6s silently killed every long dictation:
+ * a 60s take needs ~6-12s, always tripped the deadline, fell through to Whisper (also slow on
+ * long audio), and both coming back empty produced a 502 the client treats as ordinary silence.
+ * That is the "I spoke for a minute and nothing appeared, history has no record" report.
+ *
+ * Budget: a 6s floor for short utterances (unchanged behavior — a 5-word take that hangs 6s
+ * IS pathological) plus 0.3x the audio duration, capped at 25s so a stuck request still fails
+ * fast enough to fall back while the client's own 60s ceiling stays comfortably clear.
  */
-const QWEN_TIMEOUT_MS = 6_000;
+const QWEN_TIMEOUT_FLOOR_MS = 6_000;
+const QWEN_TIMEOUT_PER_SECOND_MS = 300;
+const QWEN_TIMEOUT_CEILING_MS = 25_000;
+
+/** AAC/MP3 at the client's 32-64kbps; base64 inflates by 4/3. Rough is fine — this only sizes a timeout. */
+const APPROX_BYTES_PER_AUDIO_SECOND = 4_000;
+
+export function asrTimeoutMs(audioBase64Length: number): number {
+  const seconds = (audioBase64Length * 0.75) / APPROX_BYTES_PER_AUDIO_SECOND;
+  return Math.min(QWEN_TIMEOUT_CEILING_MS, QWEN_TIMEOUT_FLOOR_MS + seconds * QWEN_TIMEOUT_PER_SECOND_MS);
+}
 
 export interface QwenRegion {
   baseUrl: string;
@@ -94,7 +110,7 @@ export async function qwenTranscribe(
         },
       },
     }),
-    signal: AbortSignal.timeout(QWEN_TIMEOUT_MS),
+    signal: AbortSignal.timeout(asrTimeoutMs(audioBase64.length)),
   });
 
   if (!res.ok) {

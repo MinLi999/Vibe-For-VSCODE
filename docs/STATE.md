@@ -2,6 +2,14 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**丢句根因锁定并修复:ASR 超时不随音频长度缩放 + VAD 连续说话不切分;录音兜底重试落地**;起因:用户报"说了一分钟麦克风有反应但没出字",并提出"能不能把语音先存下来失败重试"的 idea):
+  ① **根因(代码实证,非猜测)**:`server/src/engines/qwenAsr.ts` 的 `QWEN_TIMEOUT_MS = 6_000` 是**固定值**,而同文件注释自己写着"Qwen3-ASR 10s 音频 1-2s 返回"——按此速率 60s 音频需 6-12s,**必然超时**;降级 Whisper(同样固定 20s)对长音频也吃力;两者皆空 → 502 → 客户端按"正常静音段"静默跳过 → 用户视角就是"说了一分钟,没出字、历史无记录"。**载荷不是原因**(实测算过 60s AAC 仅 0.31MB,远低于 8MB 上限)。第二根导火索:VAD 只在静音 ≥1.2s 时切分,**连续说话永不切分**,整段 60s 堆到停止时一次性发出,恰好落进上面的超时区。
+  ② **修复 A(服务端,已部署)**:超时改为随音频长度缩放——`asrTimeoutMs()` = 6s floor + 0.3×音频秒数,25s 封顶(客户端 60s 上限之内);Whisper 同款处理(20s floor / 45s cap)。新增 3 例测试锁定(短音频保持 6s 下限、60s 音频 >20s、长音频封顶)。
+  ③ **修复 B(客户端)**:`VadSegmenter` 新增 `maxSegmentMs = 20_000` 强制切分——即使一句静音都没有,满 20s 也切一段。长口述从此边说边出字(体验修复),且每段都在引擎快速路径内(可靠性修复)。测试覆盖 25s 连续语音:切 1 段、段长恰为 20s、采样对齐仍成立、剩余 5s 完整留给尾段(不丢字节)。
+  ④ **录音兜底重试(用户 idea,`PendingAudioStore.swift` + 6 例测试)**:每段音频在**文本成功投递前**一直保留在 `pending-audio/`;失败后自动用同一段音频重试 1 次(仅对可重试错误:超时/网络/限流/5xx/**高 peak 的 no_speech**——低 peak 说明真是静音,不浪费重试);再失败则留在队列,菜单栏与设置页显示"⚠️ N 段未转写成功(录音已保留)"并提供逐条手动重试。上限 20 条、7 天自动清理、成功即删,happy path 下目录为空零成本。
+  ⑤ **处理中提示(用户第 3 点)**:HUD 在"仍在转写上一段"时显示进度指示,菜单栏显示"正在转写 N 段…"——录音期间的空窗不再被误读成"它把我说的弄丢了"。
+  ⑥ **BYOK 引擎策略拍板**:第一版只支持千问系(qwen3-asr-flash + qwen-plus),理由不只是省事——BYOK 承诺"与官方同质量"就必须绑同一套引擎,支持越杂承诺越难兑现;其他引擎待后续按需再加。
+  ⑦ 验证:四端全绿(client 19 / server 32 / desktop / Swift 86);Worker 已部署(Version 7b241882);App 公证 Accepted+staple。**待用户**:真机复现长口述场景验证修复效果;若仍有丢句,诊断页的 no_speech peak 值可直接定位是引擎侧还是采集侧。
 - 2026-08-13(**前端诊断日志落地(丢句取证工具)+ BYOK 阿里云改写默认对齐 qwen-plus**;起因:用户三连问——BYOK 双模型架构合理性、千问多语种胜任度、"有时说了话但没输出且历史无记录"的丢句问题与前端日志诉求):
   ① **丢句根因分析(代码审查)**:原生管线里音频"消失"的四个出口——(a) <0.2s 段静默丢弃;(b) **服务端 502 no-speech 被客户端按"正常静音段"静默跳过**(头号嫌疑:Qwen 对真实语音间歇性返回 degenerate 结果 + Whisper 兜底也空 → 502,服务端有日志但前端零痕迹,正对应用户描述的"麦克风有反应但没输出、历史没记录");(c) 段错误只累积、会话末只报第一条;(d) dedupe 整段裁空。此前 (a)(b)(d) 前端完全无痕。
   ② **`DiagnosticsLog.swift`(Core,5 例测试)**:内容零落盘(只记长度/引擎/耗时/原因码/峰值,与服务端日志哲学一致),环形缓冲 300 条 + diagnostics.log JSON-lines 持久化(启动时读尾部并压缩,天然轮转);AppModel 全生命周期埋点——session_start(provider/streaming/vad/词数)、segment_queued(bytes/ms/peak)、segment_too_short、**no_speech(带 peak!)**、worker_ok(engines/timings/raw_len/final_len/**fallback 原因码**——`TranscribeResult` 补解码服务端一直在发但客户端从没读的 `fallback` 字段)、byok_ok/byok_filtered(nonspeech/context_echo 分列)、dedupe_dropped、segment_error、delivered(auto/clipboard_only)、session_end/cancelled。**判读口径写进了 UI**:no_speech 且 peak>1000 = 引擎侧问题(录到了但没识别出),peak 低 = 采集侧问题。
