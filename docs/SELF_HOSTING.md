@@ -62,6 +62,7 @@ npx wrangler kv key put --binding AUTH_KEYS "你自己生成的pro-key" '{"owner
 ## 把客户端指向你的 Worker
 
 - **VS Code 扩展**：把 `vibefox.endpoint` 设成你的 Worker 地址（结尾不要斜杠），然后运行 **VibeFox: Set License Key** 填入你发的 Key。
+- **macOS 原生 App**：设置窗口里把服务地址填成 `https://your-worker.workers.dev`，粘贴 License Key。
 - **桌面应用**：托盘菜单 →「凭据与服务地址」→「修改服务地址…」，然后在同一个菜单里设置 License Key。
 
 ## 本地开发

@@ -58,7 +58,7 @@ Revoke with `wrangler kv key delete`. Rate limits are per key: free 10 req/min, 
 ## Point the clients at your Worker
 
 - **VS Code extension:** set `vibefox.endpoint` to your Worker URL (no trailing slash), then run **VibeFox: Set License Key** with a key you issued.
-- **Desktop app:** edit `~/Library/Application Support/VibeFox/config.json` → `"endpoint": "https://your-worker.workers.dev"`, then set the license key from the tray menu.
+- **Native macOS app:** Settings window → set the endpoint field to `https://your-worker.workers.dev` and paste the license key you issued.
 
 ## Local development
 
