@@ -164,12 +164,14 @@ public final class DirectProviderClient {
 
     // MARK: rewrite (clean/rewrite for non-Cloudflare providers)
 
-    /// Provider defaults matching the VS Code extension's built-in fallback models.
+    /// Default rewrite model per provider. aliyun matches the hosted Worker's quality-tier
+    /// engine (qwen-plus, server/wrangler.jsonc QWEN_REWRITE_MODEL) — BYOK aliyun promises
+    /// "same quality as hosted", and the old qwen-turbo default quietly broke that promise.
     public static func defaultRewriteModel(for provider: String) -> String {
         switch provider {
         case "groq": return "llama-3.3-70b-versatile"
         case "openai": return "gpt-4o-mini"
-        case "aliyun": return "qwen-turbo"
+        case "aliyun": return "qwen-plus"
         default: return ""
         }
     }
