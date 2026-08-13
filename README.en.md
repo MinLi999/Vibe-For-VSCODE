@@ -21,7 +21,7 @@ Generic dictation tools garble code-switched speech like "把 AudioRecorderServi
 - **Streaming mode** (experimental, `vibefox.streamingMode`) — transcribes while you speak and inserts each utterance as it finalizes, with a live preview in the status bar. Falls back to the batch path silently on any failure.
 - **Tone adapts to the target app** — the desktop app detects the frontmost app and lets the rewrite stage match it (chat stays casual, email stays composed); coding targets keep the default dictation tuning.
 - **Chinese variants** — Simplified (CN / SG-MY) and Traditional (TW / HK-MO) output.
-- **Bring your own key** — skip the hosted backend entirely: direct Groq / OpenAI / Alibaba Cloud / custom endpoint support built into the extension.
+- **Bring your own key** — skip the hosted backend entirely: both the VS Code extension and the native macOS app have direct Groq / OpenAI / Alibaba Cloud / custom endpoint support built in, sending audio and text straight to your own key with no Worker in between.
 - **Privacy** — the server logs engine names, timings, and lengths only. Transcript content is never logged or retained, and your local transcription history (last 50 entries, browsable from the command palette or tray menu) never leaves your machine.
 
 ## Two frontends, one backend
