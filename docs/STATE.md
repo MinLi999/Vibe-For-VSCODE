@@ -2,6 +2,14 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**成本建模 + 月度公平使用护栏 + 缓存前缀成本回归防线**;起因:用户问单用户月成本、是否需要账号系统、如何屏蔽固定开销风险):
+  ① **成本实测建模(非估算)**:脚本量出 `CLEAN_SYSTEM_PROMPT` 1622 字 ≈ 1341 token,加词表+项目背景 = **每请求固定 1571 token**,占改写输入的 87-91%。单用户月成本(22 工作日):轻度 $0.55 / 中度 $1.74 / 重度 $5.90 / 极端 $14.00;ASR 与改写各约一半。**$9.9 订阅下毛利率 94%/82%/40%/-41%** —— 极端尾部会亏钱,这是设护栏的直接依据。
+  ② **关键发现:隐式缓存已在默认生效,且我们的结构恰好吃得到**。查证 qwen-plus 默认开启 Context Cache、命中按 20% 计费、门槛 256 token(我们 1341 远超)、**前缀匹配**;而 `sessionKeywords` 每会话只构建一次,故同会话多分段的前缀逐字节相同、只有 rawText 变 —— 这是**碰巧对了而非设计**,一次无心的顺序调整就会静默涨价 ~30%。
+  ③ **三重防线锁死(强度递增)**:注释(最弱)→ `prompts.test.ts` 新增 4 例契约测试(两段消息必须只差后缀、rawText 必须最后、固定前缀须远超 256 token 门槛、系统提示词跨调用逐字节相同且不含日期等每请求内容)→ **生产遥测**:`qwenRewrite` 解析 DashScope 回传的 `prompt_tokens_details.cached_tokens`,成功日志新增 `cache=<cached>/<input>` —— 命中率掉了在日志里立刻可见,而不是等账单。
+  ④ **月度公平使用护栏(`quota.ts`,17 例测试)**:每 license key 每月 30 小时音频(`MONTHLY_AUDIO_LIMIT_SECONDS`,**"0" = 无限,自托管者应设此值**);时长由**载荷大小服务端估算**而非客户端上报(防伪造);**402**(而非 429)以便客户端区分"本月额度用完"与"太频繁";**引擎运行前检查**(超额请求零成本拒绝)、**引擎运行后计数**(静音段同样计费,因为 ASR 已经调用);KV 故障时**fail open**(宁可放行也不误伤付费用户);月桶键 `usage:<key>:<YYYY-MM>` + 70 天 TTL 自动清理。BYOK 用户根本不经过 Worker,天然不受限。写频安全性由 VAD 天然保证(最快 ~3s 一段,远低于 KV 单键 1 写/秒)。
+  ⑤ **客户端**:新增 `ApiError.quotaExceeded`(不可重试,直接展示服务端文案)、`GET /api/usage` + `UsageSnapshot`,设置页「账户与服务」区显示本月用量进度条(>90% 变橙)与说明,打开设置自动刷新。
+  ⑥ **账号系统结论:暂不需要**(分析见回复)——License Key 本身就是最小账号,当前缺的是自助发放而非登录;`/api/usage` 已提供用量透明度,把"必须做账号"的时点推后到出现密钥找回/团队版需求时。
+  ⑦ 验证:server 52→73 例、Swift 90→93 例、client 20 例全绿;Worker 已部署(Version 56ae9b6e),`/api/transcribe` 与 `/api/usage` 生产 401 冒烟通过;App 公证 Accepted。**踩坑记录**:测试脚本把 3 个 @Test 插进了 `extension URLRequest`,测试框架报 "missing argument for parameter 'url'"(它试图构造 URLRequest 作为测试宿主)——@Test 必须落在正确的 suite 扩展里。
 - 2026-08-13(**热键偶发失灵修复(三重看门狗)+ 本地模型可行性核实**;起因:用户报"偶尔按热键无反应,须重启 App 才恢复",并问 Qwen 模型能否本地化省钱、M3 Air 16GB 是否跑得动):
   ① **失灵通路诊断(两条,全堵)**:(a) CGEventTap 会被 macOS 单方面禁用(超时/压力),且"被禁用"通知本身可能丢失——原实现只在回调里被动自救一次,通知丢了 = tap 永久死亡,重启 App(重建 tap)恰好"治好",与现象吻合;另有安全输入(密码框/部分终端)期间 tap 看似 enabled 实则全聋。(b) phase 卡在 .processing 时热键按下被 `break` 无声吞掉,表现与死热键无法区分。
   ② **修复(10s 看门狗 `watchdogTick`)**:tap 健康轮询(`CGEvent.tapIsEnabled`,KeyMonitor 新增 `tapEnabled`/`reenable()`)→ 禁用则原地复活 → 不奏效则整体重建,各自记 diag;`IsSecureEventInputEnabled` 检测 → 安全输入期间自动切 Carbon 后备热键(丢按住语义但保命)、解除后切回 tap(Fn 模式无 Carbon 等价物,记诊断说明);.processing 超过 180s(所有网络路径超时上限之内)强制复位会话并计入 sessionErrors,热键立即恢复可用;.processing 期间被吞的按键记 `hotkey_ignored_processing`——今后再有"没反应"报告,诊断日志能直接分辨是哪条通路。

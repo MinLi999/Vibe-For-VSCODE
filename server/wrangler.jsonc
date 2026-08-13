@@ -43,7 +43,12 @@
     "QWEN_MODEL_APAC": "qwen3-asr-flash",
     "QWEN_MODEL_US": "qwen3-asr-flash-us",
     // 主力改写引擎(经多日 Haiku 对比后选定:质量相当、便宜 3-4 倍;不需要区域后缀)
-    "QWEN_REWRITE_MODEL": "qwen-plus"
+    "QWEN_REWRITE_MODEL": "qwen-plus",
+    // 每 license key 每月转写音频秒数上限(公平使用护栏,非计费表;src/quota.ts)。
+    // 108000 = 30 小时,覆盖重度日常使用,只拦极端尾部(成本模型见 STATE 2026-08-13)。
+    // **自托管者请改成 "0"(无限)** —— 你付自己的 DashScope 账单,不需要这层护栏。
+    // BYOK 用户根本不经过本 Worker,天然不受此限制。
+    "MONTHLY_AUDIO_LIMIT_SECONDS": "108000"
   },
 
   // 按 license key 限流(per-colo 计数,MVP 够用;严格全局限流将来上 Durable Objects)

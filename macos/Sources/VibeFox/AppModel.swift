@@ -74,6 +74,9 @@ final class AppModel: ObservableObject {
     let diagnostics = DiagnosticsLog(fileURL: AppPaths.userDataDir.appendingPathComponent("diagnostics.log"))
     @Published private(set) var diagRevision = 0
 
+    /// This month's hosted-backend usage (nil until fetched / not applicable to BYOK).
+    @Published private(set) var usage: UsageSnapshot?
+
     /// Failed segments' audio, kept so a lost utterance can be retried instead of vanishing.
     let pendingAudio = PendingAudioStore(userDataDir: AppPaths.userDataDir)
     @Published private(set) var pendingCount = 0
@@ -287,6 +290,19 @@ final class AppModel: ObservableObject {
 
     func refreshAccessibility() {
         accessibilityTrusted = PasteService.accessibilityTrusted()
+    }
+
+    /// Refreshes the hosted-backend usage display. No-op for BYOK (no shared backend to meter)
+    /// and silent on failure — this is an informational readout, never a blocker.
+    func refreshUsage() {
+        guard config.apiProvider == "cloudflare", let key = KeychainStore.getLicenseKey() else {
+            usage = nil
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            self.usage = try? await self.api.fetchUsage(endpoint: self.config.endpoint, licenseKey: key)
+        }
     }
 
     // MARK: BYOK provider keys (Groq/OpenAI/Aliyun — "custom" has no key, just customEndpoint)
