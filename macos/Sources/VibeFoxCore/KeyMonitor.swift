@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Foundation
 
 /// Global hotkey via a CGEvent tap — unlike Carbon RegisterEventHotKey this delivers real
@@ -65,6 +66,29 @@ public final class KeyMonitor: @unchecked Sendable {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         return true
+    }
+
+    /// Health probe for the watchdog: nil = no tap registered; false = the system disabled
+    /// the tap (timeout/pressure) and it needs reviving. macOS can disable a tap WITHOUT a
+    /// deliverable notification reaching us, so polling this is the only reliable detection —
+    /// the in-callback re-enable alone left the hotkey permanently dead in the field
+    /// ("pressed the hotkey, nothing happens, restart fixes it").
+    public var tapEnabled: Bool? {
+        tap.map { CGEvent.tapIsEnabled(tap: $0) }
+    }
+
+    /// Attempts to re-enable a disabled tap in place (cheaper than a full re-register).
+    public func reenable() {
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+    }
+
+    /// While ANY app holds secure input (password fields, some terminals), event taps receive
+    /// no keyboard events at all — the tap looks healthy but is effectively deaf. Carbon
+    /// hotkeys keep working, so the watchdog switches to the Carbon fallback for the duration.
+    public static var secureInputActive: Bool {
+        IsSecureEventInputEnabled()
     }
 
     public func unregister() {

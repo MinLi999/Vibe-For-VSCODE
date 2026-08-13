@@ -2,6 +2,11 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**热键偶发失灵修复(三重看门狗)+ 本地模型可行性核实**;起因:用户报"偶尔按热键无反应,须重启 App 才恢复",并问 Qwen 模型能否本地化省钱、M3 Air 16GB 是否跑得动):
+  ① **失灵通路诊断(两条,全堵)**:(a) CGEventTap 会被 macOS 单方面禁用(超时/压力),且"被禁用"通知本身可能丢失——原实现只在回调里被动自救一次,通知丢了 = tap 永久死亡,重启 App(重建 tap)恰好"治好",与现象吻合;另有安全输入(密码框/部分终端)期间 tap 看似 enabled 实则全聋。(b) phase 卡在 .processing 时热键按下被 `break` 无声吞掉,表现与死热键无法区分。
+  ② **修复(10s 看门狗 `watchdogTick`)**:tap 健康轮询(`CGEvent.tapIsEnabled`,KeyMonitor 新增 `tapEnabled`/`reenable()`)→ 禁用则原地复活 → 不奏效则整体重建,各自记 diag;`IsSecureEventInputEnabled` 检测 → 安全输入期间自动切 Carbon 后备热键(丢按住语义但保命)、解除后切回 tap(Fn 模式无 Carbon 等价物,记诊断说明);.processing 超过 180s(所有网络路径超时上限之内)强制复位会话并计入 sessionErrors,热键立即恢复可用;.processing 期间被吞的按键记 `hotkey_ignored_processing`——今后再有"没反应"报告,诊断日志能直接分辨是哪条通路。
+  ③ **本地模型核实(WebSearch)**:Qwen3-ASR-1.7B **开源 Apache 2.0**,HF 有官方权重 + mlx-community 多档量化(4bit ≈2.2GB),Apple Silicon 经 MLX 推理(Python 3.10-13 + MLX 0.31+,另有 qwen3-asr-mlx PyPI 与 mlx-qwen3-asr GitHub 项目);改写侧 qwen-plus 闭源无本地版,替代 = 开源 Qwen3 instruct 小模型(4B Q4 ≈2.5GB)走 Ollama/llama.cpp(OpenAI 兼容接口,与现有 BYOK rewrite 协议天然对上)。**16GB M3 Air 双模型同跑 ≈5GB,可行**。落地评估:改写本地化近零成本(等 BYOK 双 provider 拆分后配 localhost 即可);ASR 本地化需捆绑/引导 MLX Python runtime,工程量大,建议独立立项。
+  ④ 验证:Swift 90 例全过,公证 Accepted。**待用户**:真机运行数日观察诊断日志中 hotkey_* 事件,确认失灵是否绝迹。
 - 2026-08-13(**正规 QA 加固:跨实现契约 fixture + 服务端编排集成测试 + 三个真 bug(一个高危)**;起因:用户要求"用专业的软件开发测试手段充分测试,发现 bug 就修"):
   ① **高危 bug(集成测试首轮命中,前一天刚引入的):`asrTimeoutMs()` 返回浮点数**(如 6000.225),Node 的 `AbortSignal.timeout()` 对小数抛 RangeError,且该异常落在 ASR try/catch 里=**每个质量档请求都可能静默降级 Whisper**(症状与刚修完的丢句一模一样,等于把修复变成了新的退化)。`Math.round` 修复,注释标注"LOAD-BEARING",`whisperTimeoutMs` 同步处理,**已重新部署**(Version 948f0d44)。教训:昨天那次"修复"发布后只做了 401 冒烟,没有回归到 Qwen 真实调用路径——集成测试恰好补上这层。
   ② **崩溃 bug:BYOK 阿里云 URL 强制解包**——`URL(string: baseDomain + …)!` 中 baseDomain 来自设置页用户输入,畸形地址直接 crash。改 guard+throw;`transcribeOpenAICompatible` 的常量 URL 也顺手加固。全仓 `URL(string:)!` 审计过,余下三处均为编译期常量(安全)。
