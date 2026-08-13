@@ -1,14 +1,32 @@
 import SwiftUI
 import VibeFoxCore
 
-/// Six-step first-run wizard: welcome → microphone → accessibility → hotkey try →
-/// practice playground → done. Mirrors the flow validated in the Electron build.
+/// First-run wizard: welcome → microphone → accessibility → transcription engine →
+/// hotkey try → practice playground → done.
+///
+/// Steps are a named enum, NOT raw indices: the flow used to compare `step == 3` in four
+/// places, so inserting a step meant hand-renumbering every comparison. `credentials` had to
+/// be inserted BEFORE `hotkey`, because startRecording() bails in checkCredentials() when no
+/// key is configured — meaning the hotkey test and the practice step could never pass for an
+/// open-source user, who by default has no License Key at all.
 struct OnboardingView: View {
+    enum Step: Int, CaseIterable, Comparable {
+        case welcome, microphone, accessibility, credentials, hotkey, practice, done
+
+        static func < (lhs: Step, rhs: Step) -> Bool { lhs.rawValue < rhs.rawValue }
+        var next: Step { Step(rawValue: rawValue + 1) ?? .done }
+        var previous: Step { Step(rawValue: rawValue - 1) ?? .welcome }
+    }
+
     var isRerun: Bool
     var onFinish: () -> Void
 
     @EnvironmentObject private var model: AppModel
-    @State private var step = 0
+    @State private var step: Step = .welcome
+    @State private var selectedEngine = "cloudflare"
+    @State private var licenseInput = ""
+    @State private var providerKeyInput = ""
+    @State private var credentialFeedback: String?
     @State private var micGranted: Bool?
     @State private var micLevel: Float = 0
     @State private var micRecorder: AudioRecorder?
@@ -35,23 +53,29 @@ struct OnboardingView: View {
         }
         .padding(32)
         .onChange(of: model.phase) { _, newPhase in
-            if step == 3 && newPhase == .recording {
+            if step == .hotkey && newPhase == .recording {
                 hotkeyTried = true
             }
         }
         .onChange(of: model.lastDelivered) { _, delivered in
             // Practice step without accessibility: the synthetic ⌘V can't land — insert directly.
-            if step == 4, let delivered, !model.accessibilityTrusted {
+            if step == .practice, let delivered, !model.accessibilityTrusted {
                 practiceText += (practiceText.isEmpty ? "" : " ") + delivered
             }
         }
         .onChange(of: step) { _, newStep in
             stopMic()
             axTimer?.invalidate()
-            if newStep == 2 && !model.accessibilityTrusted {
+            if newStep == .accessibility && !model.accessibilityTrusted {
                 axTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
                     Task { @MainActor in model.refreshAccessibility() }
                 }
+            }
+            if newStep == .credentials {
+                // Reflect whatever is already configured (onboarding rerun); any non-hosted
+                // provider maps onto the BYOK card.
+                selectedEngine = model.config.apiProvider == "cloudflare" ? "cloudflare" : "aliyun"
+                credentialFeedback = nil
             }
         }
         .onDisappear {
@@ -62,10 +86,10 @@ struct OnboardingView: View {
 
     private var stepDots: some View {
         HStack(spacing: 9) {
-            ForEach(0..<6, id: \.self) { index in
+            ForEach(Step.allCases, id: \.self) { s in
                 Circle()
-                    .fill(index == step ? Color.accentColor : Color.secondary.opacity(0.35))
-                    .frame(width: index == step ? 9 : 7, height: index == step ? 9 : 7)
+                    .fill(s == step ? Color.accentColor : Color.secondary.opacity(0.35))
+                    .frame(width: s == step ? 9 : 7, height: s == step ? 9 : 7)
             }
         }
         .animation(.easeOut(duration: 0.15), value: step)
@@ -74,17 +98,17 @@ struct OnboardingView: View {
     @ViewBuilder
     private var stepContent: some View {
         switch step {
-        case 0:
+        case .welcome:
             VStack(spacing: 14) {
                 Text("🦊").font(.system(size: 56))
                 Text("欢迎使用 VibeFox").font(.largeTitle.bold())
                 Text("按一下热键开始说话,再按一下 —— 清理、排版好的文字就出现在任何应用的光标处。\n中文优先、中英混杂随便说,代码词汇不打折。")
                     .font(.title3).multilineTextAlignment(.center).foregroundStyle(.secondary)
                     .lineSpacing(4)
-                infoRow("1", "下面几步会依次准备好:麦克风、自动粘贴权限、热键,最后现场试一次。")
+                infoRow("1", "下面几步会依次准备好:麦克风、自动粘贴权限、转写引擎、热键,最后现场试一次。")
                 infoRow("2", "全程约一分钟,以后可在「设置 → 重新运行新手引导」里重来。")
             }
-        case 1:
+        case .microphone:
             VStack(spacing: 14) {
                 Text("🎙️ 麦克风").font(.title.bold())
                 Text("点击下方按钮授权麦克风,对着电脑说句话,看到绿条跳动即为正常。")
@@ -98,7 +122,7 @@ struct OnboardingView: View {
                         .font(.callout).foregroundStyle(.orange)
                 }
             }
-        case 2:
+        case .accessibility:
             VStack(spacing: 14) {
                 Text("⌨️ 自动粘贴权限").font(.title.bold())
                 Text("VibeFox 通过模拟 ⌘V 把文字粘进当前应用,macOS 要求先授予「辅助功能」权限。")
@@ -116,11 +140,39 @@ struct OnboardingView: View {
                 Text("勾选 VibeFox 后需要退出并重新打开 VibeFox 才生效(引导结束后会提醒)。没有该权限时,转写结果会留在剪贴板,手动 ⌘V 也能用。")
                     .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
-        case 3:
+        case .credentials:
+            VStack(spacing: 14) {
+                Text("🔑 选择转写引擎").font(.title.bold())
+                Text("语音转文字需要一个云端引擎,二选一即可(以后可在「设置」页随时切换):")
+                    .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                HStack(alignment: .top, spacing: 12) {
+                    engineCard(
+                        provider: "cloudflare", title: "官方托管", badge: "最省事",
+                        lines: ["无需申请任何 Key,粘贴 License Key 即用",
+                                "阿里云 Qwen 双模型 + 区域自动路由",
+                                "在 vibefox.app 获取 License Key"])
+                    engineCard(
+                        provider: "aliyun", title: "自带 API Key", badge: "免费",
+                        lines: ["自行申请阿里云百炼 API Key(免费注册)",
+                                "同款 Qwen 引擎,用量走你自己的账单",
+                                "适合开源自助用户,无月度上限"])
+                }
+                credentialEntryRow
+                if let credentialFeedback {
+                    Text(credentialFeedback).font(.callout).foregroundStyle(.green)
+                }
+                Text("现在跳过也可以,之后在「设置」页填写;但下一步的热键试用需要先配置好引擎。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        case .hotkey:
             VStack(spacing: 14) {
                 Text("🔥 试试热键").font(.title.bold())
                 Text("现在按下 \(model.config.hotkey) 开始录音,随便说一句,再按一次停止。")
                     .font(.title3).foregroundStyle(.secondary)
+                if !credentialsConfigured {
+                    Text("尚未配置转写引擎,录音后会提示缺少 Key —— 回上一步即可配置。")
+                        .font(.callout).foregroundStyle(.orange)
+                }
                 Text(hotkeyTried ? "✓ 热键工作正常!"
                      : model.phase == .recording ? "🔴 正在录音…再按一次热键停止"
                      : "等待你按下热键…")
@@ -129,7 +181,7 @@ struct OnboardingView: View {
                 Text("热键无反应?可能被其他应用占用,稍后可在「设置」页换一个组合键。")
                     .font(.callout).foregroundStyle(.secondary)
             }
-        case 4:
+        case .practice:
             VStack(alignment: .leading, spacing: 10) {
                 Text("✍️ 现场练习").font(.title.bold()).frame(maxWidth: .infinity)
                 Text("把光标放进下面的输入框,按热键 \(model.config.hotkey) 照着念一条:")
@@ -166,20 +218,120 @@ struct OnboardingView: View {
 
     private var navigationBar: some View {
         HStack(spacing: 10) {
-            if step > 0 && step < 5 {
-                Button("上一步") { step -= 1 }
+            if step > .welcome && step < .done {
+                Button("上一步") { step = step.previous }
             }
-            if step < 5 {
-                Button(step == 0 ? "开始设置" : "下一步") { step += 1 }
+            if step < .done {
+                Button(step == .welcome ? "开始设置" : "下一步") { step = step.next }
                     .buttonStyle(.borderedProminent)
-                if step > 0 {
-                    Button("跳过") { step += 1 }
+                if step > .welcome {
+                    Button("跳过") { step = step.next }
                 }
             } else {
                 Button("开始使用 🎉") { onFinish() }
                     .buttonStyle(.borderedProminent)
             }
         }
+    }
+
+    // MARK: transcription engine step
+
+    /// True once the currently selected provider has usable credentials — mirrors the
+    /// checks in AppModel.checkCredentials() so the hint on the hotkey step is honest.
+    private var credentialsConfigured: Bool {
+        switch model.config.apiProvider {
+        case "cloudflare": return model.licenseKeyPresent
+        case "custom": return !model.config.customEndpoint.isEmpty
+        default: return model.providerKeyPresent(model.config.apiProvider)
+        }
+    }
+
+    private func engineCard(provider: String, title: String, badge: String, lines: [String]) -> some View {
+        let selected = selectedEngine == provider
+        return Button {
+            selectedEngine = provider
+            credentialFeedback = nil
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(title).font(.headline)
+                    Text(badge)
+                        .font(.caption.bold())
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(selected ? Color.accentColor : Color.secondary.opacity(0.3),
+                                    in: Capsule())
+                        .foregroundStyle(selected ? .white : .primary)
+                    Spacer()
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                    }
+                }
+                ForEach(lines, id: \.self) { line in
+                    Text("· " + line).font(.callout).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(selected ? 0.55 : 0.25), in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11)
+                .stroke(selected ? Color.accentColor : Color.secondary.opacity(0.25),
+                        lineWidth: selected ? 2 : 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Key entry for the selected card. Selecting a card is browsing only — nothing is
+    /// persisted until 保存, so flipping between cards never breaks an existing setup.
+    @ViewBuilder
+    private var credentialEntryRow: some View {
+        if selectedEngine == "cloudflare" {
+            HStack(spacing: 8) {
+                SecureField("粘贴 License Key", text: $licenseInput)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 320)
+                Button("保存") { saveHostedKey() }
+                    .disabled(licenseInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if model.config.apiProvider == "cloudflare" && model.licenseKeyPresent {
+                    Text("已配置 ✓").font(.callout).foregroundStyle(.green)
+                }
+            }
+            Link("还没有 License Key?去 vibefox.app 获取 →",
+                 destination: URL(string: "https://vibefox.app")!)
+                .font(.callout)
+        } else {
+            HStack(spacing: 8) {
+                SecureField("粘贴阿里云百炼 API Key(sk-…)", text: $providerKeyInput)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 320)
+                Button("保存") { saveAliyunKey() }
+                    .disabled(providerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if model.config.apiProvider == "aliyun" && model.providerKeyPresent("aliyun") {
+                    Text("已配置 ✓").font(.callout).foregroundStyle(.green)
+                }
+            }
+            Link("免费申请:阿里云百炼控制台 → API-KEY 管理 →",
+                 destination: URL(string: "https://bailian.console.aliyun.com/?apiKey=1")!)
+                .font(.callout)
+        }
+    }
+
+    private func saveHostedKey() {
+        let key = licenseInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        model.setLicenseKey(key)
+        model.config.apiProvider = "cloudflare"
+        model.saveConfig()
+        licenseInput = ""
+        credentialFeedback = "已保存,使用官方托管引擎 ✓"
+    }
+
+    private func saveAliyunKey() {
+        let key = providerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        model.setProviderKey(key, for: "aliyun")
+        model.config.apiProvider = "aliyun"
+        model.saveConfig()
+        providerKeyInput = ""
+        credentialFeedback = "已保存,使用你自己的阿里云 Key ✓"
     }
 
     private func infoRow(_ tag: String, _ text: String) -> some View {
