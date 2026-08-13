@@ -26,6 +26,13 @@ private func decodeConfig(_ json: String) -> AppConfig {
     #expect(decodeConfig(#"{"language": "en"}"#).language == "en")
 }
 
+@Test func legacyWorkersDevEndpointMigratesToCustomDomain() {
+    let config = decodeConfig(#"{"endpoint": "https://vibe-voice-worker.presley-us.workers.dev"}"#)
+    #expect(config.endpoint == "https://api.vibefox.app")
+    // A self-hoster's own endpoint must NOT be touched by this migration.
+    #expect(decodeConfig(#"{"endpoint": "https://my-own-worker.example.workers.dev"}"#).endpoint == "https://my-own-worker.example.workers.dev")
+}
+
 @Test func boundsAndWhitelistsClamp() {
     let config = decodeConfig(#"{"maxRecordSeconds": 9999, "rewriteMode": "nonsense", "endpoint": "https://x.example.com///"}"#)
     #expect(config.maxRecordSeconds == 600)
