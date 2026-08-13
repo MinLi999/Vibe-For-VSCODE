@@ -114,16 +114,7 @@ final class AppModel: ObservableObject {
 
     /// Short machine-readable code for diagnostics/pending-entry display.
     static func reasonCode(_ error: Error) -> String {
-        guard let apiError = error as? ApiError else { return "unknown" }
-        switch apiError {
-        case .unauthorized: return "unauthorized"
-        case .payloadTooLarge: return "payload_too_large"
-        case .rateLimited: return "rate_limited"
-        case .noSpeech: return "no_speech"
-        case .timeout: return "timeout"
-        case .network: return "network"
-        case .server(let status, _): return "server_\(status)"
-        }
+        (error as? ApiError)?.reasonCode ?? "unknown"
     }
 
     init() {
@@ -559,20 +550,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Was this failure worth another shot with the same audio? Auth/payload/no-speech-on-quiet
-    /// audio won't改善 by retrying; timeouts, network blips, rate limits and server errors will.
+    /// Was this failure worth another shot with the same audio? (See ApiError.isRetryable.)
     private static func isRetryable(_ error: Error, peak: Int) -> Bool {
-        guard let apiError = error as? ApiError else { return false }
-        switch apiError {
-        case .timeout, .network, .rateLimited, .server:
-            return true
-        case .noSpeech:
-            // Real audio the engines read as empty — the exact failure this whole safety net
-            // exists for. Quiet audio (low peak) really was silence; don't burn a retry.
-            return peak > 1000
-        case .unauthorized, .payloadTooLarge:
-            return false
-        }
+        (error as? ApiError)?.isRetryable(capturePeak: peak) ?? false
     }
 
     private func processSegment(pcm: Data, peak: Int) async {

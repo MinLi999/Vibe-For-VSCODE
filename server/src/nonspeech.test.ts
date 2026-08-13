@@ -1,5 +1,32 @@
 import { describe, expect, it } from 'vitest';
+// Direct JSON import (resolveJsonModule) — the Workers tsconfig has no node:fs types.
+import sharedFixtures from '../../shared/fixtures/nonspeech-cases.json';
 import { isContextEcho, isNonSpeechTranscript } from './nonspeech';
+
+/**
+ * Cross-implementation contract: shared/fixtures/nonspeech-cases.json is the single source
+ * of truth also consumed by the Swift port (macos NonSpeechFilterSharedTests). Every case
+ * added there runs against BOTH implementations — divergence between the TS original and
+ * the Swift port fails one side's suite instead of shipping silently.
+ */
+const shared = sharedFixtures as unknown as {
+  isNonSpeechTranscript: { text: string; expect: boolean; why: string }[];
+  isContextEcho: { text: string; words: string[]; expect: boolean; why: string }[];
+};
+
+describe('shared fixtures (cross-implementation contract with the Swift port)', () => {
+  it('isNonSpeechTranscript agrees with every shared case', () => {
+    for (const c of shared.isNonSpeechTranscript) {
+      expect(isNonSpeechTranscript(c.text), `${c.why}: ${JSON.stringify(c.text)}`).toBe(c.expect);
+    }
+  });
+
+  it('isContextEcho agrees with every shared case', () => {
+    for (const c of shared.isContextEcho) {
+      expect(isContextEcho(c.text, c.words), `${c.why}: ${JSON.stringify(c.text)}`).toBe(c.expect);
+    }
+  });
+});
 
 describe('isNonSpeechTranscript', () => {
   it('flags empty and punctuation-only output (ASR silence hallucination)', () => {

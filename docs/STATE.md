@@ -2,6 +2,14 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**正规 QA 加固:跨实现契约 fixture + 服务端编排集成测试 + 三个真 bug(一个高危)**;起因:用户要求"用专业的软件开发测试手段充分测试,发现 bug 就修"):
+  ① **高危 bug(集成测试首轮命中,前一天刚引入的):`asrTimeoutMs()` 返回浮点数**(如 6000.225),Node 的 `AbortSignal.timeout()` 对小数抛 RangeError,且该异常落在 ASR try/catch 里=**每个质量档请求都可能静默降级 Whisper**(症状与刚修完的丢句一模一样,等于把修复变成了新的退化)。`Math.round` 修复,注释标注"LOAD-BEARING",`whisperTimeoutMs` 同步处理,**已重新部署**(Version 948f0d44)。教训:昨天那次"修复"发布后只做了 401 冒烟,没有回归到 Qwen 真实调用路径——集成测试恰好补上这层。
+  ② **崩溃 bug:BYOK 阿里云 URL 强制解包**——`URL(string: baseDomain + …)!` 中 baseDomain 来自设置页用户输入,畸形地址直接 crash。改 guard+throw;`transcribeOpenAICompatible` 的常量 URL 也顺手加固。全仓 `URL(string:)!` 审计过,余下三处均为编译期常量(安全)。
+  ③ **文档级发现:auth 对 KV 值 `'1'` 的注释错误**——`'1'` 是合法 JSON,解析成数字 1 而非走 catch(行为无害:`(1).plan` = undefined → free 档),新测试用例把这个微妙行为文档化。
+  ④ **跨实现契约 fixture(本项目特有风险的正解)**:同一逻辑存在三份手工同步的拷贝(nonspeech: server TS + client TS + Swift;dedupe: client TS + Swift)。新增 `shared/fixtures/{nonspeech,dedupe}-cases.json` 单一事实来源,三端测试同时消费——今后任何一份实现漂移,对应 suite 直接红。落地时踩了两个工具链坑:server tsconfig 无 node 类型(`node:fs` 报错)、client CJS 目标禁 `import.meta`——统一改 JSON 直接 import + 两端 tsconfig 加 `resolveJsonModule`。
+  ⑤ **服务端编排集成测试(`transcribe.integration.test.ts`,12 例)**:handleTranscribe 全链路首次被测——Qwen happy/空结果降级/词表复读降级/网络失败降级、双引擎皆空→502、填充词过滤→502、qwen-plus 挂→llama 兜底、双改写引擎挂→原文兜底、off 跳过、<10 字符跳过、v1 兼容映射;fetch 与 AI.run 双 mock 按 URL/模型分流。**auth.test.ts** 5 例(401 缺头/畸形、403 未知 key、metadata 解析、非 JSON 容忍)。
+  ⑥ **Swift 侧**:`ApiError.reasonCode/isRetryable(capturePeak:)` 从 AppModel 下沉到 Core(可测),AppModel 变薄委托;dedupe 确定性 fuzz(200 组构造重叠,性质断言:重叠必被消费、延续必存活);`SharedFixtureTests` 消费共享 fixture。
+  ⑦ 规模:server 32→52、client 19→20、Swift 86→90(三连跑稳定);`--skip-sign` CI 平价打包过;公证 Accepted+staple;`spctl` accepted。
 - 2026-08-13(**丢句根因锁定并修复:ASR 超时不随音频长度缩放 + VAD 连续说话不切分;录音兜底重试落地**;起因:用户报"说了一分钟麦克风有反应但没出字",并提出"能不能把语音先存下来失败重试"的 idea):
   ① **根因(代码实证,非猜测)**:`server/src/engines/qwenAsr.ts` 的 `QWEN_TIMEOUT_MS = 6_000` 是**固定值**,而同文件注释自己写着"Qwen3-ASR 10s 音频 1-2s 返回"——按此速率 60s 音频需 6-12s,**必然超时**;降级 Whisper(同样固定 20s)对长音频也吃力;两者皆空 → 502 → 客户端按"正常静音段"静默跳过 → 用户视角就是"说了一分钟,没出字、历史无记录"。**载荷不是原因**(实测算过 60s AAC 仅 0.31MB,远低于 8MB 上限)。第二根导火索:VAD 只在静音 ≥1.2s 时切分,**连续说话永不切分**,整段 60s 堆到停止时一次性发出,恰好落进上面的超时区。
   ② **修复 A(服务端,已部署)**:超时改为随音频长度缩放——`asrTimeoutMs()` = 6s floor + 0.3×音频秒数,25s 封顶(客户端 60s 上限之内);Whisper 同款处理(20s floor / 45s cap)。新增 3 例测试锁定(短音频保持 6s 下限、60s 音频 >20s、长音频封顶)。
