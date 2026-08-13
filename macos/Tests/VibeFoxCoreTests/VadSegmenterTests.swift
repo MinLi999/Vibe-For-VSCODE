@@ -52,6 +52,23 @@ private func chunk(amplitude: Int16, ms: Int = 100) -> Data {
     #expect(vad.drainTrailing() == nil) // Buffer was cleared either way.
 }
 
+@Test func continuousSpeechSplitsAtTheCeilingWithoutAnySilence() {
+    // The "spoke for a minute, nothing appeared" scenario: speech with no gap long enough to
+    // trigger the silence split. Without the ceiling the whole take buffers to the end.
+    let vad = VadSegmenter(silenceMs: 1200, minDurationMs: 3000, silenceThreshold: 350, adaptive: false)
+    var segments: [VadSegmenter.Segment] = []
+    for _ in 0..<250 { // 25s of unbroken speech, 100ms per chunk
+        if let s = vad.consume(chunk(amplitude: 3000)) { segments.append(s) }
+    }
+    #expect(segments.count == 1) // Cut once at the 20s ceiling.
+    #expect(segments[0].pcm.count == Int(VadSegmenter.maxSegmentMs * 32))
+    #expect(segments[0].pcm.count % 2 == 0) // Sample alignment still holds.
+    // The remaining ~5s stays buffered for the trailing drain, nothing is lost.
+    let trailing = vad.drainTrailing()
+    #expect(trailing != nil)
+    #expect(trailing!.pcm.count == Int(5000 * 32))
+}
+
 @Test func adaptiveThresholdRidesNoiseFloor() {
     // Noisy room: ambient at 600 would sit above the fixed 350 floor forever. The adaptive
     // floor calibrates to ~600, threshold = 600*2.5 = 1500, so 600-level "silence" still

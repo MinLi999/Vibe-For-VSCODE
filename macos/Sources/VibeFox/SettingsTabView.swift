@@ -6,6 +6,13 @@ struct SettingsTabView: View {
     @EnvironmentObject private var model: AppModel
     var onRerunOnboarding: () -> Void
 
+    static let pendingTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+
     @State private var licenseInput = ""
     @State private var endpointInput = ""
     @State private var providerKeyInput = ""
@@ -180,6 +187,36 @@ struct SettingsTabView: View {
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     .padding(6)
+                }
+
+                if model.pendingCount > 0 {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("未转写成功的录音").font(.headline)
+                                Text("共 \(model.pendingCount) 段——录音已保留,可重试")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                Spacer()
+                                Button("全部丢弃", role: .destructive) { model.clearPendingAudio() }
+                            }
+                            ForEach(model.pendingAudio.list()) { entry in
+                                HStack {
+                                    Text(Self.pendingTimeFormatter.string(from: Date(timeIntervalSince1970: entry.at / 1000)))
+                                        .font(.callout.monospaced()).foregroundStyle(.secondary)
+                                    Text("\(entry.durationMs / 1000) 秒")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                    Text(entry.lastError)
+                                        .font(.callout).foregroundStyle(.orange)
+                                    Text("已试 \(entry.attempts) 次")
+                                        .font(.callout).foregroundStyle(.tertiary)
+                                    Spacer()
+                                    Button("重试") { model.retryPending(entry) }
+                                }
+                                Divider()
+                            }
+                        }
+                        .padding(6)
+                    }
                 }
 
                 GroupBox {

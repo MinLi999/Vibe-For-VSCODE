@@ -65,6 +65,13 @@ struct HudView: View {
                         .font(.callout).foregroundStyle(.secondary)
                         .lineLimit(1)
                         .frame(maxWidth: 180, alignment: .trailing)
+                } else if model.inFlightSegments > 0 {
+                    // Recording continues while an earlier segment is still being transcribed —
+                    // say so, otherwise the gap reads as "it lost what I just said".
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.small)
+                        Text("上一段转写中…").font(.callout).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
