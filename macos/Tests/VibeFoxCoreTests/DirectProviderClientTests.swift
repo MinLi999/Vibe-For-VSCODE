@@ -34,7 +34,9 @@ import Testing
 @Test func defaultRewriteModelPerProvider() {
     #expect(DirectProviderClient.defaultRewriteModel(for: "groq") == "llama-3.3-70b-versatile")
     #expect(DirectProviderClient.defaultRewriteModel(for: "openai") == "gpt-4o-mini")
-    #expect(DirectProviderClient.defaultRewriteModel(for: "aliyun") == "qwen-turbo")
+    // Must match the hosted Worker's quality-tier rewrite engine (wrangler.jsonc
+    // QWEN_REWRITE_MODEL) — BYOK aliyun promises hosted-equivalent quality.
+    #expect(DirectProviderClient.defaultRewriteModel(for: "aliyun") == "qwen-plus")
 }
 
 @Test func rewriteSystemPromptSelectsModeAndVariant() {

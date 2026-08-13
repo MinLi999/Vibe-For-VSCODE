@@ -2,6 +2,13 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-13(**前端诊断日志落地(丢句取证工具)+ BYOK 阿里云改写默认对齐 qwen-plus**;起因:用户三连问——BYOK 双模型架构合理性、千问多语种胜任度、"有时说了话但没输出且历史无记录"的丢句问题与前端日志诉求):
+  ① **丢句根因分析(代码审查)**:原生管线里音频"消失"的四个出口——(a) <0.2s 段静默丢弃;(b) **服务端 502 no-speech 被客户端按"正常静音段"静默跳过**(头号嫌疑:Qwen 对真实语音间歇性返回 degenerate 结果 + Whisper 兜底也空 → 502,服务端有日志但前端零痕迹,正对应用户描述的"麦克风有反应但没输出、历史没记录");(c) 段错误只累积、会话末只报第一条;(d) dedupe 整段裁空。此前 (a)(b)(d) 前端完全无痕。
+  ② **`DiagnosticsLog.swift`(Core,5 例测试)**:内容零落盘(只记长度/引擎/耗时/原因码/峰值,与服务端日志哲学一致),环形缓冲 300 条 + diagnostics.log JSON-lines 持久化(启动时读尾部并压缩,天然轮转);AppModel 全生命周期埋点——session_start(provider/streaming/vad/词数)、segment_queued(bytes/ms/peak)、segment_too_short、**no_speech(带 peak!)**、worker_ok(engines/timings/raw_len/final_len/**fallback 原因码**——`TranscribeResult` 补解码服务端一直在发但客户端从没读的 `fallback` 字段)、byok_ok/byok_filtered(nonspeech/context_echo 分列)、dedupe_dropped、segment_error、delivered(auto/clipboard_only)、session_end/cancelled。**判读口径写进了 UI**:no_speech 且 peak>1000 = 引擎侧问题(录到了但没识别出),peak 低 = 采集侧问题。
+  ③ **设置页新增「诊断」区块**:最近 14 条事件(等宽字体,no_speech/error 橙色高亮)+ 复制诊断日志 + 清空;隐私说明明示不含转写内容。
+  ④ **BYOK 阿里云改写默认 qwen-turbo→qwen-plus**:与托管 Worker 的 `QWEN_REWRITE_MODEL` 对齐——"BYOK 阿里云=官方同质量"的承诺此前被这个默认值悄悄打破,测试断言同步加了注释锁定。
+  ⑤ 核实(WebSearch):qwen3-asr-flash 官方支持 **11 语种**(中含粤/川渝/闽南/吴方言、英日韩法德西意葡俄阿),自动语种检测,句内 code-switching 鲁棒性是官方主打——日英/韩英/法英混说在 ASR 侧现有 `language:auto` 配置下即可工作,无需改码;改写 prompt 目前中文中心(规则措辞提"中英混排"),多语种化属后续工作。
+  ⑥ 验证:Swift 79 例全过,公证 Accepted+staple,四端全绿。**待用户**:真实复现丢句场景后看诊断日志的 no_speech peak 值定位问题侧;BYOK 双模型拆分(ASR/改写独立选型)方案已给分析待拍板。
 - 2026-08-13(**BYOK 大陆版打平官方质量:阿里云引擎换 qwen3-asr-flash + 服务端真实 prompt 全量移植,拍板"无需降级"**;起因:用户讨论"BYOK 大陆版能不能做成双模型和相同质量",核实阿里云国内域名 `dashscope.aliyuncs.com` 确实支持 `qwen3-asr-flash`(WebSearch 核实,7 月旧调研只查过国际版)后用户拍板方案 A、不做 paraformer-v2 降级链):
   ① **ASR 引擎换血**:`DirectProviderClient.transcribeAliyun` 从 paraformer-v2 异步三段式(提交→轮询→取结果)整个换成 `qwen3-asr-flash` 同步 `multimodal-generation` 调用——和 `server/src/engines/qwenAsr.ts` 服务端用的**完全同一个引擎同一个接口**,只是国内域名 + 用户自己的 Key,代码量反而更小(异步轮询逻辑整段删除)。keywords 走 system message 做识别偏置,与服务端机制一致。
   ② **改写 prompt 从"弱化兜底版"升级成"服务端真实版"**:核实 CLAUDE.md"prompt 服务端所有"红线的初衷是**防止客户端伪造 prompt 白嫖 Cloudflare 后端计费**,BYOK 模式用户自己的 Key 直接付费给阿里云不经过 Worker,这条红线保护的对象不存在;且仓库整体 AGPL 开源,`server/src/prompts.ts` 本来就在公开仓库里,搬到客户端跑不算泄密。`RewritePrompts.swift` 整个替换成 `prompts.ts` 的 `CLEAN_SYSTEM_PROMPT`/`REWRITE_SYSTEM_PROMPT`/`withChineseVariant`/`withAppTone` 逐字移植(**踩雷**:用普通字符串字面量装不下——中文提示词里嵌了 ASCII 直引号当书名号用,提前终止字符串;`#"""..."""#` 多行 raw string 解决,和上次 `#"..."#` 单行是同一类问题的更大号版本),`buildUserMessage` 同步移植(含 projectContext 传递)。**适用范围从阿里云扩大到全部 BYOK provider**(Groq/OpenAI/自定义同样升级到真实 prompt,没理由留着弱化版)。
