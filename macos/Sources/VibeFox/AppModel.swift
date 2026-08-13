@@ -30,6 +30,8 @@ final class AppModel: ObservableObject {
 
     private let recorder = AudioRecorder()
     private let api = ApiClient()
+    /// BYOK: direct provider calls (Groq/OpenAI/Aliyun/custom) bypassing the Worker entirely.
+    private let directProvider = DirectProviderClient()
     private let hotkey = HotkeyManager()
     /// Event-tap hotkey (real keyDown/keyUp → tap-to-toggle AND hold-to-talk; Fn support).
     private let keyMonitor = KeyMonitor()
@@ -163,6 +165,25 @@ final class AppModel: ObservableObject {
         accessibilityTrusted = PasteService.accessibilityTrusted()
     }
 
+    // MARK: BYOK provider keys (Groq/OpenAI/Aliyun — "custom" has no key, just customEndpoint)
+
+    func providerKeyPresent(_ provider: String) -> Bool {
+        guard let account = KeychainStore.providerKeyAccount(for: provider) else { return false }
+        return KeychainStore.getSecret(account: account) != nil
+    }
+
+    func setProviderKey(_ key: String, for provider: String) {
+        guard let account = KeychainStore.providerKeyAccount(for: provider) else { return }
+        KeychainStore.setSecret(key, account: account)
+        objectWillChange.send() // Presence is read on demand (not @Published); nudge the view.
+    }
+
+    func clearProviderKey(for provider: String) {
+        guard let account = KeychainStore.providerKeyAccount(for: provider) else { return }
+        KeychainStore.clearSecret(account: account)
+        objectWillChange.send()
+    }
+
     // MARK: dictionary intents (each persists immediately)
 
     func dictAdd(word: String, aliases: [String], source: String = "manual") {
@@ -225,12 +246,36 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func startRecording() async {
-        guard let licenseKey = KeychainStore.getLicenseKey() else {
-            notify("还没有设置 License Key — 打开设置窗口的「设置」页填入。")
-            settingsWindow.show(model: self)
-            return
+    /// Verifies the active provider has what it needs before spending a microphone permission
+    /// prompt / recording session on a request that would just fail. Shows the settings window
+    /// pointed at the missing credential when something's absent.
+    private func checkCredentials() -> Bool {
+        switch config.apiProvider {
+        case "cloudflare":
+            guard KeychainStore.getLicenseKey() != nil else {
+                notify("还没有设置 License Key — 打开设置窗口的「设置」页填入,或切到自带 API Key(BYOK)。")
+                settingsWindow.show(model: self)
+                return false
+            }
+        case "custom":
+            guard !config.customEndpoint.trimmingCharacters(in: .whitespaces).isEmpty else {
+                notify("自定义服务地址未配置 — 打开设置窗口的「设置」页填入。")
+                settingsWindow.show(model: self)
+                return false
+            }
+        default:
+            guard let account = KeychainStore.providerKeyAccount(for: config.apiProvider),
+                  KeychainStore.getSecret(account: account) != nil else {
+                notify("\(providerDisplayName(config.apiProvider)) API Key 未设置 — 打开设置窗口的「设置」页填入。")
+                settingsWindow.show(model: self)
+                return false
+            }
         }
+        return true
+    }
+
+    private func startRecording() async {
+        guard checkCredentials() else { return }
         if !micAccessAsked {
             micAccessAsked = true
             guard await AudioRecorder.requestMicrophoneAccess() else {
@@ -253,7 +298,10 @@ final class AppModel: ObservableObject {
         streamingPcm.reset()
         streamingDone = MainSignal()
 
-        if config.streamingMode {
+        // Streaming (/api/realtime) is a Cloudflare Worker feature — BYOK providers have no
+        // equivalent, so they always take the batch/VAD path (matches the VS Code extension:
+        // `config.streamingMode && config.apiProvider === 'cloudflare'`).
+        if config.streamingMode, config.apiProvider == "cloudflare", let licenseKey = KeychainStore.getLicenseKey() {
             openStreamingSession(licenseKey: licenseKey)
         }
         if streamingClient == nil && config.vadEnabled {
@@ -444,25 +492,12 @@ final class AppModel: ObservableObject {
     }
 
     private func processSegment(pcm: Data, peak: Int) async {
-        guard pcm.count >= 6400, let licenseKey = KeychainStore.getLicenseKey() else { return }
+        guard pcm.count >= 6400 else { return } // Under ~0.2s cannot contain speech.
         do {
-            let m4a = try AacEncoder.encodeToM4A(pcm16: pcm)
-            let result = try await api.transcribe(
-                endpoint: config.endpoint,
-                licenseKey: licenseKey,
-                request: TranscribeRequest(
-                    audio: m4a.base64EncodedString(),
-                    language: config.language,
-                    keywords: sessionKeywords,
-                    projectContext: config.projectContext.isEmpty ? nil : config.projectContext,
-                    rewriteMode: config.rewriteMode,
-                    chineseVariant: config.chineseVariant,
-                    regionPreference: config.dashscopeRegion,
-                    capturePeak: peak,
-                    appCategory: sessionAppCategory
-                )
-            )
-            await deliverFinalText(result.finalText)
+            let finalText = config.apiProvider == "cloudflare"
+                ? try await transcribeViaWorker(pcm: pcm, peak: peak)
+                : try await transcribeViaDirectProvider(pcm: pcm)
+            await deliverFinalText(finalText)
         } catch let error as ApiError {
             switch error {
             case .noSpeech:
@@ -474,6 +509,84 @@ final class AppModel: ObservableObject {
             }
         } catch {
             sessionErrors.append(error.localizedDescription)
+        }
+    }
+
+    private func transcribeViaWorker(pcm: Data, peak: Int) async throws -> String {
+        guard let licenseKey = KeychainStore.getLicenseKey() else {
+            throw ApiError.unauthorized
+        }
+        let m4a = try AacEncoder.encodeToM4A(pcm16: pcm)
+        let result = try await api.transcribe(
+            endpoint: config.endpoint,
+            licenseKey: licenseKey,
+            request: TranscribeRequest(
+                audio: m4a.base64EncodedString(),
+                language: config.language,
+                keywords: sessionKeywords,
+                projectContext: config.projectContext.isEmpty ? nil : config.projectContext,
+                rewriteMode: config.rewriteMode,
+                chineseVariant: config.chineseVariant,
+                regionPreference: config.dashscopeRegion,
+                capturePeak: peak,
+                appCategory: sessionAppCategory
+            )
+        )
+        return result.finalText
+    }
+
+    /// BYOK: transcribes via the selected provider directly (no Worker involved), then — for
+    /// off-Cloudflare rewrite — runs a client-side clean/rewrite chat-completions call against
+    /// the SAME provider. A broken/unset rewrite never blocks delivery: it just falls back to
+    /// the raw transcription (matches the VS Code extension's BYOK behavior).
+    private func transcribeViaDirectProvider(pcm: Data) async throws -> String {
+        let m4a = try AacEncoder.encodeToM4A(pcm16: pcm)
+        let audioBase64 = m4a.base64EncodedString()
+        let provider = config.apiProvider
+
+        let rawText: String
+        switch provider {
+        case "groq":
+            rawText = try await directProvider.transcribeGroq(
+                apiKey: try requireProviderKey("groq"), audioBase64: audioBase64, language: config.language, keywords: sessionKeywords)
+        case "openai":
+            rawText = try await directProvider.transcribeOpenAI(
+                apiKey: try requireProviderKey("openai"), audioBase64: audioBase64, language: config.language, keywords: sessionKeywords)
+        case "aliyun":
+            rawText = try await directProvider.transcribeAliyun(
+                baseEndpoint: config.customEndpoint, apiKey: try requireProviderKey("aliyun"), audioBase64: audioBase64, language: config.language)
+        case "custom":
+            guard !config.customEndpoint.isEmpty else { throw ApiError.network("自定义服务地址 (customEndpoint) 未配置") }
+            rawText = try await directProvider.transcribeCustom(
+                endpoint: config.customEndpoint, audioBase64: audioBase64, language: config.language, keywords: sessionKeywords)
+        default:
+            throw ApiError.network("不支持的 API Provider: \(provider)")
+        }
+
+        guard config.rewriteMode != "off", let baseURL = DirectProviderClient.chatBaseURL(for: provider, customEndpoint: config.customEndpoint) else {
+            return rawText
+        }
+        let apiKey = (try? requireProviderKey(provider)) ?? ""
+        let model = config.llmCorrectionModel.isEmpty ? DirectProviderClient.defaultRewriteModel(for: provider) : config.llmCorrectionModel
+        let systemPrompt = RewritePrompts.systemPrompt(rewriteMode: config.rewriteMode, chineseVariant: config.chineseVariant)
+        return await directProvider.rewrite(baseURL: baseURL, apiKey: apiKey, model: model, text: rawText, keywords: sessionKeywords, systemPrompt: systemPrompt)
+    }
+
+    private func requireProviderKey(_ provider: String) throws -> String {
+        guard let account = KeychainStore.providerKeyAccount(for: provider),
+              let key = KeychainStore.getSecret(account: account) else {
+            throw ApiError.unauthorized
+        }
+        return key
+    }
+
+    private func providerDisplayName(_ provider: String) -> String {
+        switch provider {
+        case "groq": return "Groq"
+        case "openai": return "OpenAI"
+        case "aliyun": return "阿里云"
+        case "custom": return "自定义服务"
+        default: return provider
         }
     }
 

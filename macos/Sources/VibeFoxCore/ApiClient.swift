@@ -57,6 +57,9 @@ public enum ApiError: Error, LocalizedError {
     case noSpeech
     case server(Int, String)
     case network(String)
+    /// Request timeout (distinct from a generic network failure — matches the VS Code
+    /// extension's ApiErrorKind, used by BYOK direct-provider calls).
+    case timeout(String)
 
     public var errorDescription: String? {
         switch self {
@@ -66,6 +69,7 @@ public enum ApiError: Error, LocalizedError {
         case .noSpeech: return "未识别到语音,请重试。"
         case .server(let status, let message): return "服务端错误(\(status)):\(message)"
         case .network(let message): return "网络错误:\(message)"
+        case .timeout(let message): return "请求超时:\(message)"
         }
     }
 }

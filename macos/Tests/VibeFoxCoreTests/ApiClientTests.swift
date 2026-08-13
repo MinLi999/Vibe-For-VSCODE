@@ -20,8 +20,14 @@ final class MockURLProtocol: URLProtocol {
     }
 }
 
+/// Every test anywhere in this test target that uses MockURLProtocol MUST live in this one
+/// suite (as an extension, if declared in another file). `.serialized` only serializes tests
+/// WITHIN a single suite — two different `@Suite(.serialized)` structs can still run
+/// concurrently against each other, and since MockURLProtocol.handler is one shared static
+/// closure, that race corrupts whichever test loses (see DirectProviderClientTests.swift's
+/// extension for the BYOK network tests that share this suite for exactly that reason).
 @Suite(.serialized)
-struct ApiClientErrorMapping {
+struct MockedNetworkTests {
     private func client(status: Int, body: String) -> ApiClient {
         MockURLProtocol.handler = { _ in (status, Data(body.utf8)) }
         let config = URLSessionConfiguration.ephemeral
