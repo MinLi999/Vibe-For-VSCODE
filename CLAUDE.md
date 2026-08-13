@@ -22,7 +22,7 @@
 
 ## 项目硬规则(事实与红线)
 
-0. **语言分工**:沟通与内部文档(CLAUDE.md、docs/)用中文;**代码一律英文,含注释**(`//`、`/** */`);**commit message 与对外文档(README 等)用英文**(2026-07-23 开源后用户指定,替代原中文 commit 惯例)。产品面向终端用户的中文字符串(状态栏文案、错误提示、命令标题)属产品内容不算「代码」,可保留中文。
+0. **语言分工**:沟通与内部文档(CLAUDE.md、docs/)用中文;**代码一律英文,含注释**(`//`、`/** */`);**commit message 与对外文档(README 等)用英文**(2026-07-23 开源后用户指定,替代原中文 commit 惯例)。产品面向终端用户的中文字符串(状态栏文案、错误提示、命令标题)属产品内容不算「代码」,可保留中文。**Commit 作者与署名只用用户本人的 git 身份(`Min Li <presley.us@gmail.com>`)——commit message 里绝不加 `Co-Authored-By: Claude ...` 或任何 AI 署名行**(2026-08-13 用户明确要求:GitHub 贡献者列表只能显示他自己;实际 git author 从未变过是 `Min Li`,问题出在 message 正文里的这行被 GitHub 解析成"共同作者"——此前 84 个历史 commit 带了这行,需要 `git filter-repo` rewrite + force-push 才能清除,细节见 docs/STATE.md)。
 1. **严格 MVC+S 分层**(详见 docs/02-STANDARDS.md):
    - `client/src/models/` 禁 `vscode.window`/`vscode.commands`(纯数据与状态);
    - `client/src/viewer/` 禁 `fetch(`/`spawn(`/业务判断(只渲染 UI、读 UI、插入文本);
