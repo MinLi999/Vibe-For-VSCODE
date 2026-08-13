@@ -96,6 +96,29 @@ struct SettingsTabView: View {
                         }
                         Text("自托管:部署 server/ 到自己的 Cloudflare Worker 后把地址填到这里(见 docs/SELF_HOSTING.md);转写引擎密钥只存在 Worker 端。")
                             .font(.callout).foregroundStyle(.secondary)
+
+                        if model.config.apiProvider == "cloudflare", model.licenseKeyPresent {
+                            Divider()
+                            HStack {
+                                Text("本月用量").font(.callout)
+                                if let usage = model.usage {
+                                    if usage.isUnlimited {
+                                        Text("不限量(自托管)").font(.callout).foregroundStyle(.secondary)
+                                    } else {
+                                        ProgressView(value: usage.fractionUsed)
+                                            .frame(width: 160)
+                                        Text(String(format: "%.1f / %.0f 小时", usage.usedHours, usage.limitHours))
+                                            .font(.callout.monospacedDigit())
+                                            .foregroundStyle(usage.fractionUsed > 0.9 ? .orange : .secondary)
+                                    }
+                                } else {
+                                    Text("—").font(.callout).foregroundStyle(.tertiary)
+                                }
+                                Button("刷新") { model.refreshUsage() }
+                            }
+                            Text("公平使用护栏:每月 30 小时转写音频,足够重度日常使用;用自己的 API Key(下方「转写引擎」)则不受此限制。")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
                     }
                     .padding(6)
                 }
@@ -257,6 +280,7 @@ struct SettingsTabView: View {
             }
             .padding(16)
         }
+        .onAppear { model.refreshUsage() }
         .onDisappear { stopMicTest() }
     }
 

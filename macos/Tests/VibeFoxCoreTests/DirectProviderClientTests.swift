@@ -215,3 +215,61 @@ extension URLRequest {
         return data
     }
 }
+
+// MARK: quota (402) and usage readout — must live in the serialized mock-network suite,
+// NOT in the URLRequest helper extension above (a @Test there makes the framework try to
+// construct a URLRequest to host the test).
+
+extension MockedNetworkTests {
+    @Test func quotaExceededMapsTo402WithServerMessage() async {
+        MockURLProtocol.handler = { _ in (402, Data(#"{"error":"本月转写时长已达上限(30 小时),下月 1 日重置。"}"#.utf8)) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let api = ApiClient(configuration: config)
+        let request = TranscribeRequest(audio: "QUJD", language: "auto", keywords: [], projectContext: nil,
+                                        rewriteMode: "clean", chineseVariant: "simplified-cn",
+                                        regionPreference: "auto", capturePeak: nil, appCategory: nil)
+        do {
+            _ = try await api.transcribe(endpoint: "https://mock.test", licenseKey: "k", request: request)
+            Issue.record("should throw")
+        } catch let ApiError.quotaExceeded(message) {
+            // Hoisted: #expect's function-call decomposition mishandles an enum case
+            // constructor written inline (same class of macro limitation as mutating calls).
+            let quotaError = ApiError.quotaExceeded(message)
+            let retryable = quotaError.isRetryable(capturePeak: 5000)
+            let code = quotaError.reasonCode
+            #expect(message.contains("上限"))
+            #expect(!retryable) // Waiting seconds cannot help — never auto-retry a quota block.
+            #expect(code == "quota_exceeded")
+        } catch {
+            Issue.record("wrong error: \(error)")
+        }
+    }
+
+    @Test func fetchUsageDecodesSnapshotAndComputesFraction() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, Data(#"{"usedSeconds":54000,"limitSeconds":108000,"remainingSeconds":54000}"#.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let api = ApiClient(configuration: config)
+        let usage = try await api.fetchUsage(endpoint: "https://mock.test", licenseKey: "k")
+        #expect(usage.usedHours == 15)
+        #expect(usage.limitHours == 30)
+        #expect(usage.fractionUsed == 0.5)
+        #expect(!usage.isUnlimited)
+    }
+
+    @Test func unlimitedBackendReportsNoCap() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, Data(#"{"usedSeconds":999999,"limitSeconds":0,"remainingSeconds":0}"#.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let api = ApiClient(configuration: config)
+        let usage = try await api.fetchUsage(endpoint: "https://mock.test", licenseKey: "k")
+        #expect(usage.isUnlimited)
+        #expect(usage.fractionUsed == 0) // Never shows a full bar when uncapped.
+    }
+}
+

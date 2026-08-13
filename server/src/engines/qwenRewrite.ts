@@ -22,7 +22,24 @@ export function resolveQwenRewriteRegion(env: Env, continent: string | undefined
 
 interface QwenTextGenResponseShape {
   output?: { choices?: Array<{ message?: { content?: string } }> };
+  /**
+   * DashScope reports how much of the prompt was served from its implicit context cache.
+   * We surface it because ~88% of every rewrite request is the fixed prompt prefix, billed at
+   * 20% when cached — so cache_hit is effectively a live cost gauge. A silent drop to zero
+   * (e.g. someone puts varying content ahead of the stable prefix) would otherwise be
+   * invisible until the invoice arrives. See prompts.ts buildRewriteUserMessage.
+   */
+  usage?: { input_tokens?: number; output_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
 }
+
+/** Cache telemetry for one rewrite call; content-free, safe to log. */
+export interface RewriteUsage {
+  inputTokens: number;
+  cachedTokens: number;
+}
+
+/** Populated by the most recent qwenRewrite call for the caller's log line. */
+export let lastRewriteUsage: RewriteUsage | undefined;
 
 /**
  * Rewrite via Qwen-Plus (DashScope native text-generation) — the sole quality-tier rewrite
@@ -59,6 +76,10 @@ export async function qwenRewrite(region: QwenRewriteRegion, systemPrompt: strin
   }
 
   const body = (await res.json()) as QwenTextGenResponseShape;
+  lastRewriteUsage = {
+    inputTokens: body.usage?.input_tokens ?? 0,
+    cachedTokens: body.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+  };
   const text = body.output?.choices?.[0]?.message?.content?.trim();
   if (!text) {
     throw new EngineError('rewrite', 'qwen_rewrite_empty');

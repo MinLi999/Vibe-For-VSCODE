@@ -5,6 +5,7 @@ import { qwenTranscribe, resolveQwenRegion } from './engines/qwenAsr';
 import { qwenRewrite, resolveQwenRewriteRegion } from './engines/qwenRewrite';
 import { HttpError, toReasonCode } from './errors';
 import { isContextEcho, isNonSpeechTranscript } from './nonspeech';
+import { estimateAudioSeconds, recordUsage } from './quota';
 import { buildRewriteUserMessage, CLEAN_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT, withAppTone, withChineseVariant } from './prompts';
 import { APP_CATEGORIES, AUDIO_FORMATS } from './types';
 import type {
@@ -255,6 +256,10 @@ export async function handleTranscribe(request: Request, env: Env, auth: AuthRes
     );
   }
   const asrMs = Date.now() - started;
+
+  // Count the audio the moment an engine has actually processed it — including the no-speech
+  // path below, because a silent take costs us the same ASR call as a spoken one.
+  await recordUsage(env, auth.key, estimateAudioSeconds(body.audio.length));
 
   // Empty AND hallucinated non-speech ("...", "(音频中充斥着机械噪音…)") both count as "no speech":
   // skipping the rewrite stage saves its cost, and the 502 message keeps the exact substrings

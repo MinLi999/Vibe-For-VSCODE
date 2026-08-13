@@ -61,6 +61,9 @@ public enum ApiError: Error, LocalizedError {
     case payloadTooLarge
     /// 429 — per-key rate limit.
     case rateLimited
+    /// 402 — this month's fair-use allowance is spent (distinct from rateLimited: waiting
+    /// seconds won't help, the user needs next month or their own API key).
+    case quotaExceeded(String)
     /// 502 — the ASR heard no speech (a NORMAL outcome for silence, not a failure).
     case noSpeech
     case server(Int, String)
@@ -74,6 +77,7 @@ public enum ApiError: Error, LocalizedError {
         case .unauthorized: return "License Key 无效或已失效,请重新设置。"
         case .payloadTooLarge: return "录音过长,超出当前档位的载荷上限。"
         case .rateLimited: return "请求过于频繁,请稍候几秒再试。"
+        case .quotaExceeded(let message): return message
         case .noSpeech: return "未识别到语音,请重试。"
         case .server(let status, let message): return "服务端错误(\(status)):\(message)"
         case .network(let message): return "网络错误:\(message)"
@@ -87,6 +91,7 @@ public enum ApiError: Error, LocalizedError {
         case .unauthorized: return "unauthorized"
         case .payloadTooLarge: return "payload_too_large"
         case .rateLimited: return "rate_limited"
+        case .quotaExceeded: return "quota_exceeded"
         case .noSpeech: return "no_speech"
         case .timeout: return "timeout"
         case .network: return "network"
@@ -104,10 +109,23 @@ public enum ApiError: Error, LocalizedError {
             return true
         case .noSpeech:
             return capturePeak > 1000
-        case .unauthorized, .payloadTooLarge:
+        case .unauthorized, .payloadTooLarge, .quotaExceeded:
             return false
         }
     }
+}
+
+/// GET /api/usage — this month's fair-use consumption for the hosted backend.
+public struct UsageSnapshot: Decodable {
+    public var usedSeconds: Double
+    public var limitSeconds: Double
+    public var remainingSeconds: Double
+
+    /// 0 when the backend is configured as unlimited (self-hosted).
+    public var isUnlimited: Bool { limitSeconds == 0 }
+    public var usedHours: Double { usedSeconds / 3600 }
+    public var limitHours: Double { limitSeconds / 3600 }
+    public var fractionUsed: Double { limitSeconds == 0 ? 0 : min(1, usedSeconds / limitSeconds) }
 }
 
 public final class ApiClient {
@@ -151,6 +169,9 @@ public final class ApiClient {
             throw ApiError.unauthorized
         case 413:
             throw ApiError.payloadTooLarge
+        case 402:
+            let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
+            throw ApiError.quotaExceeded(message ?? "本月转写额度已用完。")
         case 429:
             throw ApiError.rateLimited
         case 502:
@@ -158,6 +179,31 @@ public final class ApiClient {
         default:
             let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"] ?? ""
             throw ApiError.server(http.statusCode, message)
+        }
+    }
+
+    /// Fetches this month's usage. Only meaningful against a hosted/self-hosted Worker —
+    /// BYOK users never call it (there is no shared backend to meter).
+    public func fetchUsage(endpoint: String, licenseKey: String) async throws -> UsageSnapshot {
+        guard let url = URL(string: endpoint + "/api/usage") else {
+            throw ApiError.network("无效的服务地址:\(endpoint)")
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(licenseKey)", forHTTPHeaderField: "Authorization")
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ApiError.network(error.localizedDescription)
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            throw status == 401 || status == 403 ? ApiError.unauthorized : ApiError.server(status, "")
+        }
+        do {
+            return try JSONDecoder().decode(UsageSnapshot.self, from: data)
+        } catch {
+            throw ApiError.server(200, "用量响应格式异常")
         }
     }
 }
