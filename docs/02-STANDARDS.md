@@ -6,7 +6,10 @@
 | 端 | 栈 | 构建/验证 |
 |---|---|---|
 | client | TypeScript + VS Code Extension API,esbuild 单文件打包,**零运行时依赖** | `cd client && npm run typecheck && npm run compile`;打包 `npm run package` |
+| macos | Swift + SwiftUI,SPM(`VibeFoxCore` 库 + `VibeFox` App),AVAudioEngine 采集,**零外部依赖**(无 ffmpeg) | `cd macos && swift build && swift test`;打包 `./scripts/make-app.sh [--notarize]` |
 | server | TypeScript + Cloudflare Worker(native fetch handler,无框架),AI + KV 绑定 | `cd server && npm run typecheck`;本地 `npm run dev`;发布 `npm run deploy`(仅 /deploy) |
+
+`macos/` 与 `client/` 是**两套独立实现**(Swift 不 import TypeScript),同名逻辑靠 `shared/fixtures/*.json` 的跨实现契约测试防漂移——改了一端的 nonspeech/dedupe 行为,另一端的测试会直接红。
 
 ## 2. 分层职责(MVC+S,映射到本项目实际目录)
 
@@ -45,3 +48,11 @@
 - **错误面向用户**:一律经 Controller 用 `showErrorMessage` 给**可操作**文案(ffmpeg 缺失 →「一键安装」按钮直接在内置终端执行安装命令,不让用户抄命令);Service 层抛 typed Error 不弹 UI。
 - **Disposable**:所有注册(命令/监听/状态栏)入 `context.subscriptions`;类实现 `vscode.Disposable`。
 - **无 any**:`strict: true`;跨端契约(请求/响应)在 client 与 server 各自 types 中保持字段一致。
+
+### 4.1 长驻进程的系统资源生命周期(常驻 App 专属,三条都是真实 bug 换来的)
+
+菜单栏 App 一开就是几天几周,系统资源会在它背后被 macOS 悄悄收走。以下三条按被踩的顺序:
+
+1. **长生命周期的系统资源必须可重建,不能只可重启**。`AVAudioEngine`、`CGEventTap` 这类句柄会被系统单方面废掉(闲置省电、睡眠唤醒、设备切换、被其他进程抢占),且**废掉之后该实例永久不可用**——持有它的字段必须是 `var` 并有一条重建路径。判据很简单:如果某个故障"重启 App 就好了",那它百分之百是这类问题,因为重启做的唯一额外的事就是新建实例。(2026-08-14 录音键失灵、2026-08-13 热键失灵)
+2. **关键自愈要挂在用户操作的同步路径上,不能只靠 Timer 兜底**。macOS App Nap 会把后台 App 的 `Timer` 节流到几十秒乃至分钟级,所以 watchdog 只能当**第二层**。第一层永远是"用户按下按钮的那一刻当场检查并修复"——按键本身就是"我现在就要它工作"的最强信号。需要定时器不被节流时(如录音期间),用 `ProcessInfo.beginActivity` 显式声明活动,且**用完即释放**以免白耗电。
+3. **失败必须有常驻可见出口 + 诊断埋点,二者缺一都会变成"点了没反应"**。只写 `@Published var lastError` 不算数——要确认它在**菜单栏或主界面真的有渲染位置**;系统通知需要用户授权、可能被勿扰吞掉,只能当增强不能当唯一出口。每条失败路径同时补 `diag()`,否则事后无法归因(2026-08-14 那次三重静默:无展示位 + 通知可能没授权 + 无埋点)。
