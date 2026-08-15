@@ -2,6 +2,15 @@
 > ⚠️ 每次 DoD 通过后用主管视角更新;相对日期转绝对日期。
 
 ## 当前阶段 / 健康度
+- 2026-08-14(**"闲置一段时间后点录音键完全没反应"根因修复:AVAudioEngine 实例失效不可自愈**;起因:用户报告闲置后点录音按钮毫无反应,需重启 App):
+  ① **根因(代码实证)**:`AudioRecorder` 里 `private let engine = AVAudioEngine()` 是**整个 App 生命周期复用的单一实例**,而全仓 grep 确认**从未监听 `.AVAudioEngineConfigurationChange`**,也从未处理系统睡眠唤醒。macOS 在闲置省电/睡眠唤醒/默认输入设备切换/其他进程独占音频时会重配音频栈——AVAudioEngine 收到通知后**自行 stop、installTap 全部失效、inputNode 开始返回 0 Hz 格式**。此后该实例上的每次 `start()` 都抛 `no input device`,**永久失效直到重建实例**——这正是"重启 App 就好了"(重启=新实例)的机械原因。
+  ② **为什么用户看到的是"完全没反应"而不是错误**:失败路径调 `notify()` → 只设 `@Published lastError`,而 grep 确认 **`lastError` 在菜单栏和主界面都没有任何展示位**(唯一的 `lastError` 渲染是 pending-audio 条目的同名字段),系统通知又需 `UNUserNotificationCenter` 授权、可能被勿扰吞掉;**且这条路径当初没有 diag 埋点**,所以专门做的诊断日志也抓不到——三重静默叠加。
+  ③ **修复 A(核心自愈,`AudioRecorder`)**:`engine` 由 `let` 改 `var`;监听 `.AVAudioEngineConfigurationChange` 置 `configurationStale`;`start()` 变成"发现 stale 先重建 → 尝试启动 → 失败则重建实例再试一次"的自愈流程,失败仍失败才抛出真错误;新增 `invalidateEngine()` 供外部标记;新增 `onRecovery` 回调上报重建原因(诊断)。**关键设计:自愈发生在 `start()` 的同步路径上,不依赖任何 Timer** —— 因为菜单栏 App 长期后台运行会被 App Nap 把 Timer 节流到几十秒甚至分钟级,基于 watchdog 的兜底本身就不可靠。另加 `attemptStart()` 内 `removeTap` 防御(残留 tap 上重复 installTap 会直接 trap)。
+  ④ **修复 B(系统唤醒,第二层)**:监听 `NSWorkspace.didWakeNotification` —— 睡眠会同时打掉音频栈与 event tap,而后台 App 常常收不到各子系统的通知,用户开盖第一次按键正是最需要能用的时刻。唤醒后主动 `invalidateEngine()` + 重建热键 tap;若睡眠时正在录音则复位会话(那段录音已经丢了,避免下次按键变成"停止"却什么都不吐)。
+  ⑤ **修复 C(卡死会话的即时复位)**:原 `.processing` 卡死只靠 180s watchdog,而 **UI 按钮路径(`toggleRecording`)的 `.processing` 分支只有一句 `break`、连埋点都没有**(热键路径 `hotkeyPressed` 反而有)。抽出 `resetIfProcessingStuck()` 供 watchdog 与用户按键共用:**把用户按键本身当作最可靠的 watchdog 触发点**(按键 = 用户明确表示"我现在就要它工作"),卡死则就地复位并直接开始新录音;未卡死则记 `toggle_ignored_processing`。
+  ⑥ **修复 D(让失败可见 + 可取证)**:菜单栏新增 `lastError` 展示 + "清除提示"按钮(这是 lastError 唯一的常驻可见位);`recorder.start()` 失败新增 `recorder_start_failed` 埋点;引擎重建上报 `audio_engine_recovered`;唤醒记 `system_wake`。
+  ⑦ **修复 E(App Nap)**:录音期间用 `ProcessInfo.beginActivity([.userInitiated, .idleSystemSleepDisabled])` 声明活动,避免电平计、最长时长自动停止、VAD 分段派发被节流;仅录音期间持有,空闲时照常 App Nap 省电。
+  ⑧ 验证:`swift test` 93→**97 例全绿**;新增 `AudioRecorderTests`(4 例)刻意设计为**有麦克风与 CI 无音频设备两种环境都成立**(断言"失败后仍可复用"而非"录音必成功"),含重复失败不 trap、双重 start 幂等。**并实证确认自愈真的走通**:单独跑脚本确认本机输入设备可用(44100Hz),故 `invalidatedEngineRecoversOrFailsCleanly` 走的是成功分支 —— `invalidateEngine()` 后重建引擎启动成功且 `onRecovery("config_change")` 如期上报,而非靠 catch 分支蒙混通过。
 - 2026-08-13(**历史提交 rewrite:清除 84 条 `Co-Authored-By: Claude`,GitHub 贡献者列表只剩用户本人**;起因:用户发现 Claude 出现在 GitHub 贡献者图里,明确要求"以后不再用 Claude 作为作者"并要求把已推送的历史也改掉):
   ① **先纠正问题模型**:git author/committer 从来都是 `Min Li`(146 条提交 0 条 author 是 Claude)——"Claude 上榜"的真实原因是 84 条 commit message 正文里的 `Co-Authored-By: Claude ...` trailer,GitHub 解析这行加了个第二贡献者头像,不是 git 配置问题,是消息内容问题。
   ② **两次 `git filter-repo --message-callback` 都因 Claude Code 自身的 auto-mode 分类器拦截而无法由我直接执行**(拦截发生在命令派发前,repo 未受影响)——把改写命令交给用户在自己终端跑。用户第一次跑时报 `TypeError: expected string or bytes-like object, got 'NoneType'` 崩溃。

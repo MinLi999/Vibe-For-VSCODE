@@ -45,6 +45,8 @@ final class AppModel: ObservableObject {
     /// Set when phase enters .processing — the stuck-state watchdog's clock.
     private var processingSince: Date?
     private var watchdogTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
+    private var recordingActivity: NSObjectProtocol?
     /// A .processing phase older than this is stuck (every network path times out way
     /// earlier); force-reset instead of leaving the hotkey dead until an app restart.
     private static let processingStuckSeconds: TimeInterval = 180
@@ -151,12 +153,43 @@ final class AppModel: ObservableObject {
         if !config.onboardingDone {
             settingsWindow.show(model: self)
         }
+        recorder.onRecovery = { [weak self] reason in
+            Task { @MainActor [weak self] in
+                self?.diag("audio_engine_recovered", "reason=\(reason)")
+            }
+        }
+        // System sleep tears down the audio stack and event taps alike, and a backgrounded
+        // menu-bar app often never receives the per-subsystem notifications — the user just
+        // opens the lid and finds a dead hotkey. Rebuild both proactively on wake instead of
+        // waiting for the 10s watchdog, because the very first press after waking is the one
+        // that has to work.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleSystemWake() }
+        }
         // Hotkey/state watchdog — the answer to "pressed the hotkey, nothing happened,
         // had to restart the app". See watchdogTick for the three failure modes it heals.
         watchdogTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.watchdogTick()
             }
+        }
+    }
+
+    /// Post-wake repair. Both subsystems are rebuilt rather than probed: probing an event tap
+    /// reports "enabled" even when it is deaf, and probing the audio engine costs a start().
+    private func handleSystemWake() {
+        recorder.invalidateEngine()
+        diag("system_wake", "phase=\(phase) tap=\(usingEventTap)")
+        // Mid-session at sleep time the recording is already lost; reset so the next press is
+        // a clean start rather than a "stop" that delivers nothing.
+        if phase == .recording {
+            cancelRecording()
+            diag("system_wake_session_reset", "")
+        }
+        if phase == .idle {
+            registerHotkey()
         }
     }
 
@@ -192,20 +225,32 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // (3) Stuck .processing: hotkey presses are ignored in this phase, so a hung session
-        // reads as "the app is dead". Every network path times out long before this fires.
-        if phase == .processing, let since = processingSince,
-           Date().timeIntervalSince(since) > Self.processingStuckSeconds {
-            diag("processing_watchdog_reset", "stuck_s=\(Int(Date().timeIntervalSince(since)))")
-            recorder.onPcmChunk = nil
-            recorder.cancel()
-            streamingClient?.close()
-            streamingClient = nil
-            vad = nil
-            segmentQueue = nil
-            sessionErrors.append("转写卡住已自动复位(诊断日志有记录)")
-            finishSession()
-        }
+        // (3) Stuck .processing: presses are ignored in this phase, so a hung session reads as
+        // "the app is dead". Every network path times out long before this fires.
+        resetIfProcessingStuck()
+    }
+
+    /// Clears a session stuck in .processing past every network timeout. Returns true if it
+    /// actually reset something.
+    ///
+    /// Driven by the watchdog AND by user presses: the watchdog is a Timer, and macOS App Nap
+    /// throttles timers in a backgrounded menu-bar app to tens of seconds or worse — so the
+    /// 10s cadence is a best case, not a guarantee. A press is the one moment we know the user
+    /// needs it working, which makes it the most reliable trigger available.
+    @discardableResult
+    private func resetIfProcessingStuck() -> Bool {
+        guard phase == .processing, let since = processingSince,
+              Date().timeIntervalSince(since) > Self.processingStuckSeconds else { return false }
+        diag("processing_watchdog_reset", "stuck_s=\(Int(Date().timeIntervalSince(since)))")
+        recorder.onPcmChunk = nil
+        recorder.cancel()
+        streamingClient?.close()
+        streamingClient = nil
+        vad = nil
+        segmentQueue = nil
+        sessionErrors.append("转写卡住已自动复位(诊断日志有记录)")
+        finishSession()
+        return true
     }
 
     // MARK: config & credentials
@@ -380,7 +425,14 @@ final class AppModel: ObservableObject {
         case .recording:
             Task { await stopAndFinish() }
         case .processing:
-            break // Ignore presses while the previous session is still transcribing.
+            // A hung session makes this button look dead. Treat the press as a probe: if the
+            // session is provably stuck, clear it and start the recording the user asked for
+            // instead of silently swallowing the press.
+            if resetIfProcessingStuck() {
+                Task { await startRecording() }
+            } else {
+                diag("toggle_ignored_processing", "in_flight=\(inFlightSegments)")
+            }
         case .idle:
             Task { await startRecording() }
         }
@@ -460,12 +512,22 @@ final class AppModel: ObservableObject {
             streamingClient?.close()
             streamingClient = nil
             recorder.onPcmChunk = nil
+            // Leaves a trace: this path used to fail completely silently for the user (the
+            // banner has no home in the menu bar, and the notification needs permission), so
+            // "I pressed record and nothing happened" was unattributable from the log alone.
+            diag("recorder_start_failed", "err=\(error.localizedDescription)")
             notify(error.localizedDescription)
             return
         }
 
         diag("session_start", "provider=\(config.apiProvider) streaming=\(streamingClient != nil) vad=\(vad != nil) keywords=\(sessionKeywords.count)")
         phase = .recording
+        // App Nap throttles a backgrounded menu-bar app's timers hard, which would stall the
+        // level meter, the max-duration stop, and VAD segment dispatch mid-dictation. Held only
+        // for the duration of the recording, so idle VibeFox still naps and saves power.
+        recordingActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled], reason: "VibeFox recording"
+        )
         hud.show(model: self)
         levelTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -861,6 +923,10 @@ final class AppModel: ObservableObject {
         maxStopTask = nil
         levelTimer?.invalidate()
         levelTimer = nil
+        if let recordingActivity {
+            ProcessInfo.processInfo.endActivity(recordingActivity)
+            self.recordingActivity = nil
+        }
     }
 
     /// Dictionary picks (usage-ranked) first; config.vocabulary seeds fill the rest of the

@@ -25,11 +25,26 @@ public final class AudioRecorder: @unchecked Sendable {
 
     public static let sampleRate: Double = 16000
 
-    private let engine = AVAudioEngine()
+    /// Rebuilt (not merely restarted) whenever macOS reconfigures the audio hardware under us.
+    ///
+    /// This is the fix for "left the app alone for a while, pressed record, nothing happened,
+    /// had to quit and relaunch": when the system suspends or reconfigures the audio stack
+    /// (idle power management, sleep/wake, default-device switch, another process grabbing the
+    /// device), AVAudioEngine stops itself, kills installed taps, and its inputNode starts
+    /// reporting a 0 Hz format. Every later start() on that same instance fails forever, so
+    /// relaunching the app — which built a fresh instance — was the only way back. Hence `var`.
+    private var engine = AVAudioEngine()
+    private var configObserver: NSObjectProtocol?
+    /// Set by the configuration-change observer (any thread); lock-protected like pcm/peak.
+    private var configurationStale = false
     private let lock = NSLock()
     private var pcm = Data()
     private var running = false
     private var peak: Int16 = 0
+
+    /// Reports that start() had to rebuild the engine to recover, with the reason. Diagnostics
+    /// only — the recording itself proceeds normally.
+    public var onRecovery: (@Sendable (String) -> Void)?
     /// Serializes onPcmChunk delivery so downstream consumers (VAD segmentation, streaming
     /// upload) see chunks in capture order without their own locking.
     private let chunkQueue = DispatchQueue(label: "vibefox.audio.chunks")
@@ -44,10 +59,54 @@ public final class AudioRecorder: @unchecked Sendable {
         return Int(peak)
     }
 
-    public init() {}
+    public init() {
+        observeConfigurationChanges()
+    }
+
+    deinit {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+    }
 
     public static func requestMicrophoneAccess() async -> Bool {
         await AVCaptureDevice.requestAccess(for: .audio)
+    }
+
+    /// AVAudioEngine posts this when the hardware configuration changes underneath it. The
+    /// engine has already stopped itself and its taps are dead by the time we hear about it,
+    /// so the only safe response is to rebuild the instance before the next start().
+    private func observeConfigurationChanges() {
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.lock.lock()
+            self.configurationStale = true
+            self.lock.unlock()
+        }
+    }
+
+    /// Discards the current engine (and its observer) for a fresh one. Cheap: AVAudioEngine
+    /// allocation is trivial next to the failure mode it heals.
+    private func rebuildEngine() {
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+            self.configObserver = nil
+        }
+        engine.stop()
+        engine = AVAudioEngine()
+        observeConfigurationChanges()
+        lock.lock()
+        configurationStale = false
+        lock.unlock()
+    }
+
+    /// Marks the engine as needing a rebuild before the next start(). Called on system wake,
+    /// where the audio stack is routinely torn down without a configuration-change notification
+    /// ever reaching a backgrounded app.
+    public func invalidateEngine() {
+        lock.lock()
+        configurationStale = true
+        lock.unlock()
     }
 
     public func start() throws {
@@ -55,8 +114,32 @@ public final class AudioRecorder: @unchecked Sendable {
         lock.lock()
         pcm = Data()
         peak = 0
+        let stale = configurationStale
         lock.unlock()
 
+        var recovery: String?
+        if stale {
+            // A configuration change already told us this instance is dead — don't bother
+            // trying it, the attempt would just fail with a 0 Hz input format.
+            rebuildEngine()
+            recovery = "config_change"
+        }
+
+        do {
+            try attemptStart()
+        } catch {
+            // Self-heal: a suspended or reconfigured audio stack leaves the engine permanently
+            // unusable, and only a fresh instance recovers. Without this retry the failure
+            // survives until the user quits and relaunches the app.
+            rebuildEngine()
+            recovery = recovery ?? "start_failed"
+            try attemptStart() // Still failing on a brand-new engine = a real, reportable error.
+        }
+        running = true
+        if let recovery { onRecovery?(recovery) }
+    }
+
+    private func attemptStart() throws {
         let input = engine.inputNode
         let hardwareFormat = input.outputFormat(forBus: 0)
         guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
@@ -68,6 +151,9 @@ public final class AudioRecorder: @unchecked Sendable {
             throw RecorderError.engineStartFailed("unsupported input format \(hardwareFormat)")
         }
 
+        // Defensive: installing a second tap on a bus that already has one traps. A tap can
+        // survive a failed start, so clear before installing rather than trusting bookkeeping.
+        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
             self?.consume(buffer, converter: converter, targetFormat: targetFormat)
         }
@@ -79,7 +165,6 @@ public final class AudioRecorder: @unchecked Sendable {
             input.removeTap(onBus: 0)
             throw RecorderError.engineStartFailed(error.localizedDescription)
         }
-        running = true
     }
 
     /// Stops capture and returns the session's 16kHz mono PCM16 bytes.
