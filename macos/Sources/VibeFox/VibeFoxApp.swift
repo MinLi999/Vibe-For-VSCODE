@@ -72,6 +72,15 @@ struct MenuContentView: View {
 
         Text("热键:\(model.config.hotkey)")
 
+        // The only always-visible home for lastError: a failed start (dead audio engine,
+        // missing credentials) otherwise reaches the user only through a system notification
+        // they may never have granted — which is exactly what "I pressed it and nothing
+        // happened" looked like from their side.
+        if let error = model.lastError {
+            Text("⚠️ \(error)")
+            Button("清除提示") { model.lastError = nil }
+        }
+
         if model.inFlightSegments > 0 {
             Text("正在转写 \(model.inFlightSegments) 段…")
         }
