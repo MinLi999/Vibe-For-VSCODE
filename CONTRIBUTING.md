@@ -6,34 +6,28 @@
 
 ## 项目结构
 
-- `client/` —— VS Code 扩展。**严格 MVC+S 分层**（代码审查时会检查）：
-  - `models/` —— 纯数据与状态。禁止 `vscode.window` / `vscode.commands`。
-  - `viewer/` —— 只做 UI 渲染与读取。禁止 `fetch(`、`spawn(`，不放业务判断。
-  - `services/` —— 只做 I/O（录音进程、HTTPS）。禁止调用 UI；`AudioRecorderService`、`CloudflareApiService`、`SystemPasteService` 里不能出现 `vscode` 导入 —— 这几个是被移植（非导入）到 `macos/` 原生 App 的逻辑源本，vscode 依赖混进去会让移植对不上。
-  - `controllers/` —— 唯一可以同时触碰 M/V/S 的层。
+- `macos/` —— 原生 SwiftUI App（Swift Package Manager），`VibeFoxCore` 库 + `VibeFox` App。
 - `server/` —— Cloudflare Worker。原生 fetch handler，各引擎在 `src/engines/` 下。
-- `macos/` —— 原生 SwiftUI App（Swift Package Manager）。与 `client/` 是两套独立实现，靠 `shared/fixtures/` 的跨实现契约测试防止逻辑漂移，不直接 import TypeScript 代码。
+- `shared/fixtures/` —— server 与 macos 共用的跨实现契约测试数据（JSON），防止同一逻辑（如 nonspeech 过滤）在两端悄悄漂移。
 
 ## 硬性规则
 
-1. **代码与注释一律英文。** 面向终端用户的产品文案可以是中文。内部设计文档（`docs/`）是中文，对外文档中英双语。
-2. **仓库里不许出现任何密钥** —— 密钥走 `wrangler secret put` / `wrangler kv key put`，License Key 存在 VS Code SecretStorage 或 macOS 钥匙串里。改写提示词与模型 id 归服务端所有，API 永远不接受客户端传入的 prompt 或模型名。
+1. **代码与注释一律英文。** 面向终端用户的产品文案可以是中文。仓库里的 `.md` 文档除本文件、`README.md`/`README.en.md`、`docs/SELF_HOSTING.md`/`.en.md` 外均为作者私人工作笔记，不进版本控制。
+2. **仓库里不许出现任何密钥** —— 密钥走 `wrangler secret put` / `wrangler kv key put`，License Key 存在 macOS 钥匙串里。改写提示词与模型 id 归服务端所有，API 永远不接受客户端传入的 prompt 或模型名。
 3. **服务端绝不记录转写内容** —— 只记录引擎名、耗时、长度和原因码。
-4. **不捆绑二进制**（ffmpeg/sox 的许可证风险），**不用 webview 录音**（VS Code 对 webview 的麦克风权限不可靠）。
+4. **不捆绑二进制**（第三方许可证风险）。
 
 ## 提 PR 之前
 
 ```bash
-cd client && npm run typecheck && npm run compile && npm test
 cd server && npm run typecheck && npm test
 cd macos  && swift build && swift test
 ```
 
-CI 跑的就是这些。改动了纯逻辑请补测试（用 vitest，风格参考 `server/src/nonspeech.test.ts` 和 `client/src/models/TranscriptDedupe.test.ts`）。
+CI 跑的就是这些。改动了纯逻辑请补测试（server 用 vitest，风格参考 `server/src/nonspeech.test.ts`；macos 用 Swift Testing）。
 
 ## 适合新人上手的任务
 
-- 在真机上测试 Windows/Linux 的采集路径（dshow/pulse）—— 代码写好了但从没在真实机器上验证过。
 - 复现或修复标记为 `help wanted` 的 issue。
 
 ## Commit 规范

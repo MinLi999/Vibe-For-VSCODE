@@ -1,5 +1,5 @@
 name: Bug report / 问题反馈
-description: Something broken in the extension, macOS app, or server / 扩展、macOS 端或服务端出了问题
+description: Something broken in the macOS app or server / macOS 端或服务端出了问题
 labels: [bug]
 body:
   - type: markdown
@@ -10,7 +10,6 @@ body:
     attributes:
       label: Component / 组件
       options:
-        - VS Code extension (client/)
         - macOS app (macos/)
         - Server / Worker (server/)
         - Not sure
@@ -28,10 +27,9 @@ body:
     attributes:
       label: Environment / 环境
       placeholder: |
-        OS / version:
-        VS Code version (if extension):
+        macOS version:
         Hosted backend or self-hosted?
-        apiProvider setting (cloudflare / groq / openai / aliyun / custom):
+        Transcription engine (hosted / groq / openai / aliyun / custom):
     validations:
       required: true
   - type: textarea
@@ -39,8 +37,6 @@ body:
     attributes:
       label: Logs / screenshots / 日志与截图
       description: |
-        Status bar text, error toasts, Output panel content. For "no speech detected" issues,
-        enable `vibefox.diagnosticSaveAudio` and describe what the saved MP3 sounds like.
-        状态栏文字、错误弹窗、输出面板内容。若是「未识别到语音」问题，请打开
-        `vibefox.diagnosticSaveAudio`，复现后描述落盘的 MP3 里到底有没有声音。
+        Menu bar error banner text, or the last few entries from Settings → 诊断 (Diagnostics).
+        菜单栏的错误提示文字，或设置页「诊断」区最近几条事件记录。
         ⚠️ 千万不要贴出 API Key 或 License Key。/ Never paste API keys or license keys.
