@@ -1,6 +1,10 @@
 <p align="right"><b>English</b> · <a href="README.md">简体中文</a></p>
 
+### 🌐 Website: [vibefox.app](https://vibefox.app)
+
 # VibeFox 🦊
+
+> ⚠️ **Under active development**: still in packaging/cleanup before an official release. That said, everything in this repo builds and runs today — jump to "Quick start" below if you want to try it now or contribute.
 
 **AI voice input for the Mac — Chinese-first, built for Chinese/English code-switching.**
 
@@ -8,7 +12,13 @@ Press a hotkey (`⌘⌥Z` or the **Fn key**), speak your prompt (mixing Chinese 
 
 VibeFox is fully open source (AGPL-3.0). Use the hosted backend with a license key, bring your own API keys, or self-host the whole stack — see "Quick start" below.
 
-Website: **[vibefox.app](https://vibefox.app)** · VibeFox is free forever — if it saves you time, consider [❤️ supporting development](https://vibefox.app/support).
+VibeFox is free forever — if it saves you time, consider [❤️ supporting development](https://vibefox.app/support).
+
+## Why this project exists
+
+It started because dictation inside VS Code with Claude Code didn't support Chinese at all, let alone speech that mixes Chinese and English mid-sentence — so a VS Code extension got built to fix that for myself.
+
+Living with it exposed the real limitation: an extension only works inside one app. What I actually wanted was voice input that works **anywhere**, so the project moved to a cross-platform approach — which, in practice, still wasn't good enough. It ended up rewritten as a native Swift macOS app, which is the shape of this repo today. Users can build up a large custom vocabulary of word combinations inside it, and recognition keeps getting more accurate the more it's used.
 
 ## Why VibeFox
 
