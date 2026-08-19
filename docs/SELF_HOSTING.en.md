@@ -55,10 +55,9 @@ npx wrangler kv key put --binding AUTH_KEYS "some-pro-key" '{"owner":"me","plan"
 
 Revoke with `wrangler kv key delete`. Rate limits are per key: free 10 req/min, pro 40 req/min (see `unsafe.bindings` in `wrangler.jsonc`).
 
-## Point the clients at your Worker
+## Point the client at your Worker
 
-- **VS Code extension:** set `vibefox.endpoint` to your Worker URL (no trailing slash), then run **VibeFox: Set License Key** with a key you issued.
-- **Native macOS app:** Settings window → set the endpoint field to `https://your-worker.workers.dev` and paste the license key you issued.
+Settings window → set the endpoint field to `https://your-worker.workers.dev` and paste the license key you issued.
 
 ## Local development
 
@@ -73,4 +72,4 @@ Smoke test: no auth header → 401, unknown key → 403, wrong path → 404.
 
 ## No server at all (BYOK)
 
-If you don't want to run a Worker, set `vibefox.apiProvider` to `groq`, `openai`, `aliyun`, or `custom` in the extension — transcription and rewrite then run directly against that provider with your own API key.
+If you don't want to run a Worker, switch the transcription engine in Settings to `groq`, `openai`, `aliyun`, or a custom endpoint — transcription and rewrite then run directly against that provider with your own API key, with no server in between at all.

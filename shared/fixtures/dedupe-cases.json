@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for dedupeAgainstSession, consumed by client/src/models/TranscriptDedupe.test.ts (TS original) AND macos TranscriptDedupeSharedTests (Swift port).",
+  "$comment": "Single source of truth for dedupeAgainstSession, consumed by macos TranscriptDedupeSharedTests (Swift).",
   "cases": [
     { "prev": "你现在需要调整几点,第一是布局。", "text": "你现在需要调整几点,第一是布局。", "expect": "", "why": "whole utterance is a re-emission" },
     { "prev": "你现在需要调整几点,第一是布局。", "text": "你现在需要调整几点、第一是布局", "expect": "", "why": "re-emission with different punctuation still normalizes to an echo" },

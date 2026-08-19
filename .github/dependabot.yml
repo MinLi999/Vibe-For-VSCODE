@@ -1,16 +1,6 @@
 version: 2
 updates:
-  # One entry per workspace — this repo has two independent package.json files
-  # (macos/ is Swift Package Manager, not npm).
-  - package-ecosystem: npm
-    directory: /client
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 3
-    groups:
-      dev-dependencies:
-        dependency-type: development
-
+  # One workspace — server/ is the only npm package left (macos/ is Swift Package Manager).
   - package-ecosystem: npm
     directory: /server
     schedule:
