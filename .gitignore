@@ -32,3 +32,17 @@ server/.dev.vars
 
 # Logs
 *.log
+
+# Private working notes — internal strategy, cost modeling, progress logs. Not for the
+# public repo. docs/SELF_HOSTING.md/.en.md are the only docs/ files meant to stay public
+# (self-hosting guide); everything else here is excluded by name rather than ignoring all
+# of docs/, precisely so a new .md added to docs/ is NOT silently private by default.
+/CLAUDE.md
+/docs/01-PRD.md
+/docs/02-STANDARDS.md
+/docs/03-DOD.md
+/docs/04-STREAMING.md
+/docs/05-MAC-VOICE-INPUT.md
+/docs/SPARKLE.md
+/docs/STATE.md
+/docs/handoff.md
