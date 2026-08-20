@@ -17,6 +17,16 @@
     <language>en</language>
     <!-- <item> entries go here, newest first. -->
     <item>
+      <title>Version 0.4.0</title>
+      <pubDate>Thu, 20 Aug 2026 23:25:58 +0000</pubDate>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://vibefox.app/releases/VibeFox-0.4.0.zip"
+                 sparkle:version="202608202325"
+                 sparkle:shortVersionString="0.4.0"
+                 type="application/octet-stream"
+                 sparkle:edSignature="hOvhO6a27EhmeEYya1mtoTlnyIFP4bFbi/DPp22evpVwt4vRAQxma1LwfDgCRwcpydo5zX0CmfVKhpQuiUuzDQ==" length="2449391" />
+    </item>
+    <item>
       <title>Version 0.3.0</title>
       <pubDate>Thu, 20 Aug 2026 23:15:09 +0000</pubDate>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>

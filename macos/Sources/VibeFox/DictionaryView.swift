@@ -61,6 +61,13 @@ struct DictionaryView: View {
                             Text("词条").font(.headline)
                             Text("共 \(model.dictionary.entries.count) 条").font(.callout).foregroundStyle(.secondary)
                             Spacer()
+                            Button("从通讯录导入") {
+                                Task { @MainActor in
+                                    feedback = "正在读取通讯录…"
+                                    feedback = await ContactsImporter.importInto(model)
+                                }
+                            }
+                            .help("把联系人姓名、昵称、公司名导入词库(仅本机,不上传)")
                             Button("导出 JSON") {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(model.dictExportJson(), forType: .string)
@@ -116,13 +123,17 @@ struct DictionaryView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("替换规则").font(.headline)
+                            Text("替换规则与短语模板").font(.headline)
                             Text("转写完成后在本机执行的确定性替换,不限数量、不耗额度")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
-                        HStack {
-                            TextField("把这个…(如:艾特符号)", text: $repFrom).textFieldStyle(.roundedBorder)
-                            TextField("替换成这个…(如:@)", text: $repTo).textFieldStyle(.roundedBorder)
+                        HStack(alignment: .top) {
+                            TextField("说这个…(如:插入我的邮箱)", text: $repFrom).textFieldStyle(.roundedBorder)
+                            // Vertical axis: the target can be a full snippet (an address
+                            // block, a sign-off, a code template) up to 2000 chars.
+                            TextField("输出这个…(短词或整段模板都行)", text: $repTo, axis: .vertical)
+                                .lineLimit(1...5)
+                                .textFieldStyle(.roundedBorder)
                             Toggle("区分大小写", isOn: $repCaseSensitive)
                             Button("添加") {
                                 model.dictAddReplacement(from: repFrom, to: repTo, caseSensitive: repCaseSensitive)
@@ -133,7 +144,7 @@ struct DictionaryView: View {
                             .disabled(repFrom.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                         if model.dictionary.replacements.isEmpty {
-                            Text("(空)适合:邮箱地址、符号口令、强制大小写的术语。")
+                            Text("(空)适合:邮箱地址、符号口令、强制大小写的术语;也可以当短语模板用 —— 说「插入我的邮箱」,输出完整地址。")
                                 .font(.callout).foregroundStyle(.secondary)
                         } else {
                             ForEach(model.dictionary.replacements) { rule in
@@ -144,7 +155,7 @@ struct DictionaryView: View {
                                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 3))
                                     }
                                     Image(systemName: "arrow.right").font(.callout).foregroundStyle(.secondary)
-                                    Text(rule.to)
+                                    Text(rule.to).lineLimit(2).help(rule.to)
                                     Spacer()
                                     Button("删除", role: .destructive) { model.dictRemoveReplacement(from: rule.from) }
                                 }

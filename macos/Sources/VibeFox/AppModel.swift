@@ -434,6 +434,20 @@ final class AppModel: ObservableObject {
         DictionaryStore.save(dictionary)
     }
 
+    /// Contacts import: adds each name/org as a dictionary entry with source "contacts";
+    /// addEntry's dedupe skips anything already known. Returns how many were actually added.
+    func dictAddContacts(words: [String]) -> Int {
+        var added = 0
+        for word in words where dictionary.addEntry(word, source: "contacts") {
+            added += 1
+        }
+        if added > 0 {
+            DictionaryStore.save(dictionary)
+            diag("contacts_imported", "added=\(added) offered=\(words.count)")
+        }
+        return added
+    }
+
     /// Returns the number of imported items, or nil when the JSON is unparsable.
     func dictImport(json: String) -> Int? {
         guard let data = json.data(using: .utf8),

@@ -5,5 +5,8 @@
 	<!-- Microphone capture under the hardened runtime. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- Contacts import (dictionary): names/orgs become local dictionary entries. -->
+	<key>com.apple.security.personal-information.addressbook</key>
+	<true/>
 </dict>
 </plist>

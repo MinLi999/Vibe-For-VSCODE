@@ -4,7 +4,7 @@
 
 # VibeFox 🦊
 
-> ⚠️ **Under active development**: still in packaging/cleanup before an official release. That said, everything in this repo builds and runs today — jump to "Quick start" below if you want to try it now or contribute.
+> ⚠️ **Under active development**: features are still landing fast. A notarized installer is available at [vibefox.app/download](https://vibefox.app/download) — install once and Sparkle auto-update keeps you current.
 
 **AI voice input for the Mac — Chinese-first, built for Chinese/English code-switching.**
 
@@ -28,15 +28,17 @@ Generic dictation tools garble code-switched speech like "把 AudioRecorderServi
 - **Dictionary-biased recognition** — add names, product names, and identifiers your ASR keeps mishearing to the dictionary; both the recognition and rewrite stages use it to correct spelling and casing.
 - **Rewrite modes** — `off` (verbatim) / `clean` (default: fillers, punctuation, identifier casing) / `rewrite` (fold self-corrections, light restructuring, spoken enumerations become numbered lists — never changes intent).
 - **Streaming mode** (experimental) — transcribes while you speak and inserts each utterance as it finalizes, with a live preview in the floating HUD. Falls back to the batch path silently on any failure.
-- **Tone adapts to the target app** — detects the frontmost app and lets the rewrite stage match it (chat stays casual, email stays composed).
+- **Tone adapts to the target app** — detects the frontmost app and lets the rewrite stage match it (chat stays casual, email stays composed); the Style tab lets you **force a tone per app**, overriding the inference.
+- **A dictionary that grows on its own** — three feedback loops: **fix-it learning** in history (correct a mishearing once and the word joins the dictionary), **Contacts import** (names/orgs in one click, local only), and **homophone correction** (dictionary words auto-fix "right sound, wrong characters" — local, deterministic, free).
+- **Phrase templates** — say "insert my email" and get the full address; a spoken trigger can expand into a whole snippet (local deterministic replacement, up to 2000 chars).
 - **Chinese variants** — Simplified (CN / SG-MY) and Traditional (TW / HK-MO) output.
 - **Bring your own key** — direct Groq / OpenAI / Alibaba Cloud / custom endpoint support built in, sending audio and text straight to your own key with no server in between.
 - **Privacy** — transcript content is never logged or retained; your local transcription history (last 50 entries, browsable from the menu bar) never leaves your machine.
 
 ## Quick start
 
-1. Build: `cd macos && ./scripts/make-app.sh` (needs Xcode; or grab `VibeFox.zip` from a release).
-2. Open `build/VibeFox.app`, follow the onboarding wizard — microphone + accessibility permissions, pick a transcription engine, a live practice round.
+1. Download: [vibefox.app/download](https://vibefox.app/download) (notarized — unzip, drag into Applications); or build from source: `cd macos && ./scripts/make-app.sh` (needs Xcode).
+2. Open VibeFox, follow the onboarding wizard — microphone + accessibility permissions, pick a transcription engine, a live practice round.
 3. Press `⌘⌥Z` in any app (or switch to the Fn key in Settings), speak, press again — the text is pasted at your cursor.
 
 ### Choosing a transcription engine
