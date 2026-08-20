@@ -105,6 +105,32 @@ public struct UserDictionary: Codable, Equatable {
         return true
     }
 
+    /// Correction-driven learning ("手改回学"): the user fixed `alias` into `word` in a
+    /// transcript. Merges into an existing entry (append the alias, bump recency/hits so L1
+    /// bias ranking notices) or creates a new one with source "learned". Returns true when
+    /// anything changed.
+    @discardableResult
+    public mutating func learn(word: String, misheardAs alias: String?,
+                               now: Double = Date().timeIntervalSince1970 * 1000) -> Bool {
+        let trimmed = Self.trimmed(word)
+        guard Self.isValidWord(trimmed) else { return false }
+        if let index = entries.firstIndex(where: { $0.word.lowercased() == trimmed.lowercased() }) {
+            if let a = alias.map(Self.trimmed), Self.isValidWord(a),
+               a.lowercased() != trimmed.lowercased(),
+               !entries[index].aliases.contains(where: { $0.lowercased() == a.lowercased() }),
+               entries[index].aliases.count < 8 {
+                entries[index].aliases.append(a)
+            }
+            entries[index].lastUsedAt = now
+            entries[index].hits += 1
+            return true
+        }
+        // A self-alias (word "corrected" to itself, e.g. a pure casing fix already matching
+        // the entry id) is noise — same filter as the merge path above.
+        let usefulAlias = alias.map(Self.trimmed).flatMap { $0.lowercased() == trimmed.lowercased() ? nil : $0 }
+        return addEntry(trimmed, aliases: usefulAlias.map { [$0] } ?? [], source: "learned", now: now)
+    }
+
     @discardableResult
     public mutating func updateEntry(_ originalWord: String, word: String? = nil, aliases: [String]? = nil) -> Bool {
         guard let index = entries.firstIndex(where: { $0.word.lowercased() == originalWord.trimmingCharacters(in: .whitespaces).lowercased() }) else { return false }

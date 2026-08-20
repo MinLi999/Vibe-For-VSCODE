@@ -6,6 +6,8 @@ struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @State private var search = ""
     @State private var copiedAt: Double?
+    @State private var correcting: TranscriptHistoryEntry?
+    @State private var learnFeedback: String?
 
     private var filteredHistory: [TranscriptHistoryEntry] {
         search.isEmpty
@@ -62,6 +64,9 @@ struct HomeView: View {
                         }
                         TextField("搜索历史…", text: $search)
                             .textFieldStyle(.roundedBorder)
+                        if let learnFeedback {
+                            Text(learnFeedback).font(.callout).foregroundStyle(.green)
+                        }
                         if filteredHistory.isEmpty {
                             Text("(暂无记录)").foregroundStyle(.secondary).padding(.vertical, 8)
                         } else {
@@ -79,6 +84,13 @@ struct HomeView: View {
                                         if copiedAt == entry.at {
                                             Text("已复制 ✓").font(.callout).foregroundStyle(.green)
                                         }
+                                        Button {
+                                            correcting = entry
+                                        } label: {
+                                            Image(systemName: "pencil.line")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("改错回学:把听错的地方改对,VibeFox 会记住这些词")
                                     }
                                     .contentShape(Rectangle())
                                 }
@@ -92,6 +104,14 @@ struct HomeView: View {
             }
             .padding(16)
         }
+        .sheet(item: $correcting) { entry in
+            CorrectionSheet(original: entry.text) { corrected in
+                let learned = model.learnFromCorrection(original: entry.text, corrected: corrected)
+                learnFeedback = learned.isEmpty
+                    ? "没有发现可学习的改动"
+                    : "已学习 \(learned.count) 组:" + learned.map { "\($0.from)→\($0.to)" }.joined(separator: "、")
+            }
+        }
     }
 
     private static func format(at epochMs: Double) -> String {
@@ -99,5 +119,44 @@ struct HomeView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "M/d HH:mm"
         return formatter.string(from: date)
+    }
+}
+
+/// The "手改回学" sheet: the user edits a transcript into what they actually said; every
+/// replaced span is learned as a (misheard → correct) dictionary pair on save.
+private struct CorrectionSheet: View {
+    let original: String
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var edited: String
+
+    init(original: String, onSave: @escaping (String) -> Void) {
+        self.original = original
+        self.onSave = onSave
+        _edited = State(initialValue: original)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("改错回学").font(.title3.bold())
+            Text("把听错的地方改成你实际说的。保存后,改动的词会进入词库(来源标记 ✨学习),之后的识别、改写和同音字校正都会用上它们。")
+                .font(.callout).foregroundStyle(.secondary)
+            TextEditor(text: $edited)
+                .font(.body)
+                .frame(minHeight: 120)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("保存并学习") {
+                    onSave(edited)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || edited == original)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
     }
 }

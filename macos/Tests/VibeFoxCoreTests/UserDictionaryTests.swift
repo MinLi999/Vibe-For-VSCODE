@@ -120,3 +120,40 @@ private func decodeDictionary(_ json: String) -> UserDictionary {
     let rule = (object?["replacements"] as? [[String: Any]])?.first
     #expect(Set(rule?.keys.map { $0 } ?? []) == ["from", "to", "caseSensitive"])
 }
+
+// MARK: correction learning
+
+@Test func learnCreatesEntryWithLearnedSource() {
+    var dict = UserDictionary()
+    let created = dict.learn(word: "汐游宝", misheardAs: "西游宝", now: 1000)
+    #expect(created)
+    let entry = dict.entries.first { $0.word == "汐游宝" }
+    #expect(entry?.source == "learned")
+    #expect(entry?.aliases == ["西游宝"])
+}
+
+@Test func learnMergesAliasIntoExistingEntryAndBumps() {
+    var dict = UserDictionary()
+    _ = dict.addEntry("视频", now: 1000)
+    let merged = dict.learn(word: "视频", misheardAs: "试频", now: 2000)
+    #expect(merged)
+    let entry = dict.entries.first { $0.word == "视频" }
+    #expect(entry?.source == "manual")            // Origin is preserved; learning only enriches.
+    #expect(entry?.aliases == ["试频"])
+    #expect(entry?.hits == 1)
+    #expect(entry?.lastUsedAt == 2000)
+    // Same alias again: no duplicate, but recency still bumps.
+    let again = dict.learn(word: "视频", misheardAs: "试频", now: 3000)
+    #expect(again)
+    #expect(dict.entries.first { $0.word == "视频" }?.aliases == ["试频"])
+}
+
+@Test func learnRejectsInvalidWordAndSelfAlias() {
+    var dict = UserDictionary()
+    let blank = dict.learn(word: "   ", misheardAs: "x")
+    #expect(!blank)
+    // Alias identical to the word is dropped, but the entry itself is still created.
+    let selfAlias = dict.learn(word: "词库", misheardAs: "词库")
+    #expect(selfAlias)
+    #expect(dict.entries.first { $0.word == "词库" }?.aliases.isEmpty == true)
+}

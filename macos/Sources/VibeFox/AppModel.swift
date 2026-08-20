@@ -369,6 +369,44 @@ final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
+    // MARK: L2 phonetic correction + correction learning
+
+    /// Rebuilt only when the dictionary's word list actually changes — keyed by a hash
+    /// rather than invalidation calls sprinkled through every mutation path, so a missed
+    /// call site can't serve a stale map.
+    private var phoneticCache: (hash: Int, map: PhoneticCorrector.Map)?
+
+    private func phoneticCorrected(_ text: String) -> String {
+        var hasher = Hasher()
+        for entry in dictionary.entries { hasher.combine(entry.word) }
+        let hash = hasher.finalize()
+        if phoneticCache?.hash != hash {
+            phoneticCache = (hash, PhoneticCorrector.Map(entries: dictionary.entries))
+        }
+        guard let map = phoneticCache?.map, !map.isEmpty else { return text }
+        let corrected = PhoneticCorrector.correct(text, map: map)
+        if corrected != text {
+            diag("phonetic_corrected", "len=\(text.count)")
+        }
+        return corrected
+    }
+
+    /// The user hand-fixed a transcript in the history view; every replaced span becomes a
+    /// learned dictionary pair. Returns the pairs actually learned (for UI feedback).
+    func learnFromCorrection(original: String, corrected: String) -> [CorrectionDiff.Pair] {
+        let pairs = CorrectionDiff.learnedPairs(original: original, corrected: corrected)
+        guard !pairs.isEmpty else { return [] }
+        var learned: [CorrectionDiff.Pair] = []
+        for pair in pairs where dictionary.learn(word: pair.to, misheardAs: pair.from) {
+            learned.append(pair)
+        }
+        if !learned.isEmpty {
+            DictionaryStore.save(dictionary)
+            diag("correction_learned", "pairs=\(learned.count)")
+        }
+        return learned
+    }
+
     // MARK: dictionary intents (each persists immediately)
 
     func dictAdd(word: String, aliases: [String], source: String = "manual") {
@@ -878,7 +916,9 @@ final class AppModel: ObservableObject {
     /// Shared delivery tail for batch segments AND streaming segments:
     /// L3 replacements → session dedupe → usage stats → history → paste.
     private func deliverFinalText(_ text: String) async {
-        let replaced = dictionary.applyReplacements(text)
+        // L2 (homophone fix) before L3 (literal replacement): both deterministic and local.
+        let phonetic = phoneticCorrected(text)
+        let replaced = dictionary.applyReplacements(phonetic)
         let finalText = dedupeAgainstSession(sessionTranscript, replaced)
         guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             diag("dedupe_dropped", "len=\(replaced.count)") // Whole segment was a session echo.
