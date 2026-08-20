@@ -45,3 +45,38 @@ private func decodeConfig(_ json: String) -> AppConfig {
     #expect(config.maxRecordSeconds == 120)
     #expect(config.hotkey == "Command+Shift+D")
 }
+
+// MARK: per-app tone rules (appRules)
+
+@Test func appRulesDefaultEmptyAndDecodeLenient() {
+    #expect(decodeConfig("{}").appRules.isEmpty)
+    // Mistyped shape (array instead of map) heals to empty without discarding other fields.
+    let config = decodeConfig(#"{"appRules": ["oops"], "rewriteMode": "off"}"#)
+    #expect(config.appRules.isEmpty)
+    #expect(config.rewriteMode == "off")
+}
+
+@Test func appRulesNormalizeDropsBadEntriesKeepsGood() {
+    let config = decodeConfig(
+        #"{"appRules": {"com.apple.Safari": "chat", "com.foo.bar": "sarcastic", "  ": "email"}}"#
+    )
+    #expect(config.appRules == ["com.apple.Safari": "chat"])
+}
+
+@Test func resolveCategoryOverrideBeatsInference() {
+    // Safari infers "other"; the rule forces chat tone.
+    #expect(FrontmostApp.resolveCategory(
+        bundleId: "com.apple.Safari", overrides: ["com.apple.Safari": "chat"]) == "chat")
+    // WeChat infers "chat"; the rule turns tone adaptation off.
+    #expect(FrontmostApp.resolveCategory(
+        bundleId: "com.tencent.xinWeChat", overrides: ["com.tencent.xinWeChat": "other"]) == "other")
+}
+
+@Test func resolveCategoryFallsBackToInferenceAndIgnoresInvalidOverride() {
+    // No rule for this id -> built-in table.
+    #expect(FrontmostApp.resolveCategory(bundleId: "com.apple.mail", overrides: [:]) == "email")
+    // A rule with a category the rewrite stage doesn't know is ignored, not passed through.
+    #expect(FrontmostApp.resolveCategory(
+        bundleId: "com.apple.mail", overrides: ["com.apple.mail": "pirate"]) == "email")
+    #expect(FrontmostApp.resolveCategory(bundleId: "com.unknown.app", overrides: [:]) == "other")
+}

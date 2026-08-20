@@ -200,6 +200,7 @@ struct SettingsTabView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("其他").font(.headline)
+                        LaunchAtLoginToggle()
                         HStack {
                             Button("打开数据文件夹") {
                                 NSWorkspace.shared.open(AppPaths.userDataDir)
@@ -478,5 +479,34 @@ struct HotkeyRecorderButton: View {
         // Config format uses "Space" capitalization; letters stay uppercase.
         parts.append(keyName == "SPACE" ? "Space" : keyName)
         return parts.joined(separator: "+")
+    }
+}
+
+/// Launch-at-login toggle backed by system state (SMAppService), NOT config.json — the same
+/// switch also exists in System Settings → General → Login Items, and mirroring it into our
+/// config would drift the moment the user flips it there. Re-read after every change.
+private struct LaunchAtLoginToggle: View {
+    @State private var enabled = LaunchAtLogin.isEnabled
+    @State private var lastError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("登录时自动启动 VibeFox", isOn: Binding(
+                get: { enabled },
+                set: { newValue in
+                    do {
+                        try LaunchAtLogin.set(newValue)
+                        lastError = nil
+                    } catch {
+                        lastError = "系统未接受修改:\(error.localizedDescription) —— 也可以在「系统设置 → 通用 → 登录项」里直接开关。"
+                    }
+                    enabled = LaunchAtLogin.isEnabled
+                }
+            ))
+            .disabled(!LaunchAtLogin.isSupported)
+            if let lastError {
+                Text(lastError).font(.callout).foregroundStyle(.orange)
+            }
+        }
     }
 }

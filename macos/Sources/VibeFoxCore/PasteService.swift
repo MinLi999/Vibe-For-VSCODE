@@ -93,6 +93,10 @@ public enum FrontmostApp {
         ("net.kovidgoyal.kitty", "terminal"),
     ]
 
+    /// Every category the rewrite stage understands. "ide"/"terminal"/"other" carry no tone
+    /// instruction (default dictation tuning); "chat"/"email"/"notes" adjust tone/formatting.
+    public static let categories = ["chat", "email", "notes", "ide", "terminal", "other"]
+
     public static func categorize(bundleId: String) -> String {
         let id = bundleId.trimmingCharacters(in: .whitespaces)
         for (needle, category) in bundleIdCategories where id.hasPrefix(needle) || id.contains(needle) {
@@ -101,8 +105,21 @@ public enum FrontmostApp {
         return "other"
     }
 
+    /// A user rule (exact bundle-id match) beats the built-in inference table — the whole
+    /// point of per-app rules is overriding an inference the user disagrees with.
+    public static func resolveCategory(bundleId: String, overrides: [String: String]) -> String {
+        if let forced = overrides[bundleId], categories.contains(forced) {
+            return forced
+        }
+        return categorize(bundleId: bundleId)
+    }
+
+    public static func currentBundleId() -> String? {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
     public static func currentCategory() -> String? {
-        guard let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return nil }
+        guard let bundleId = currentBundleId() else { return nil }
         return categorize(bundleId: bundleId)
     }
 }

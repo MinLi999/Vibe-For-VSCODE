@@ -481,7 +481,9 @@ final class AppModel: ObservableObject {
         sessionErrors = []
         partialText = ""
         sessionKeywords = buildSessionKeywords()
-        sessionAppCategory = FrontmostApp.currentCategory()
+        sessionAppCategory = FrontmostApp.currentBundleId().map {
+            FrontmostApp.resolveCategory(bundleId: $0, overrides: config.appRules)
+        }
         lastError = nil
         vad = nil
         segmentQueue = nil

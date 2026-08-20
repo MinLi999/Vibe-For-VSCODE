@@ -38,6 +38,11 @@ public struct AppConfig: Codable, Equatable {
     /// Optional model override for the BYOK rewrite (clean/rewrite) chat-completions call.
     /// Empty = each provider's built-in default model.
     public var llmCorrectionModel: String
+    /// Per-app tone overrides: frontmost app bundle id → category ("chat"/"email"/"notes"/
+    /// "ide"/"terminal"/"other"). Takes precedence over the built-in inference table, so the
+    /// user can force chat tone in an app we don't know, or turn tone adaptation off for one
+    /// we do. Empty = pure inference (the pre-existing behavior).
+    public var appRules: [String: String]
 
     // Custom domain (api.vibefox.app) bound 2026-08-13; the workers.dev URL keeps routing to
     // the same Worker indefinitely (server/wrangler.jsonc keeps workers_dev:true) so this
@@ -78,6 +83,7 @@ public struct AppConfig: Codable, Equatable {
         apiProvider: "cloudflare",
         customEndpoint: "",
         llmCorrectionModel: "",
+        appRules: [:],
         vocabulary: [
             "Claude Code", "Claude", "Anthropic", "Cloudflare", "Cloudflare Workers",
             "DashScope", "Qwen", "VibeFox", "GitHub", "Vercel", "Supabase",
@@ -117,6 +123,7 @@ public struct AppConfig: Codable, Equatable {
         apiProvider = field(.apiProvider, d.apiProvider)
         customEndpoint = field(.customEndpoint, d.customEndpoint)
         llmCorrectionModel = field(.llmCorrectionModel, d.llmCorrectionModel)
+        appRules = field(.appRules, d.appRules)
         vocabulary = field(.vocabulary, d.vocabulary)
         projectContext = field(.projectContext, d.projectContext)
         normalize()
@@ -129,6 +136,7 @@ public struct AppConfig: Codable, Equatable {
         rewriteMode: String, chineseVariant: String, dashscopeRegion: String,
         restoreClipboard: Bool, streamingMode: Bool, onboardingDone: Bool,
         apiProvider: String, customEndpoint: String, llmCorrectionModel: String,
+        appRules: [String: String] = [:],
         vocabulary: [String], projectContext: String
     ) {
         self.endpoint = endpoint
@@ -151,6 +159,7 @@ public struct AppConfig: Codable, Equatable {
         self.apiProvider = apiProvider
         self.customEndpoint = customEndpoint
         self.llmCorrectionModel = llmCorrectionModel
+        self.appRules = appRules
         self.vocabulary = vocabulary
         self.projectContext = projectContext
     }
@@ -165,6 +174,11 @@ public struct AppConfig: Codable, Equatable {
         if !AppConfig.chineseVariants.contains(chineseVariant) { chineseVariant = AppConfig.default.chineseVariant }
         if !AppConfig.regions.contains(dashscopeRegion) { dashscopeRegion = AppConfig.default.dashscopeRegion }
         if !AppConfig.apiProviders.contains(apiProvider) { apiProvider = AppConfig.default.apiProvider }
+        // Hand-edited config.json survives: unknown categories and blank bundle ids are
+        // dropped entry-by-entry rather than discarding the whole map.
+        appRules = appRules.filter { key, value in
+            !key.trimmingCharacters(in: .whitespaces).isEmpty && FrontmostApp.categories.contains(value)
+        }
         endpoint = endpoint.trimmingCharacters(in: .whitespaces)
         while endpoint.hasSuffix("/") { endpoint.removeLast() }
         if endpoint.isEmpty { endpoint = AppConfig.officialHostedEndpoint }
